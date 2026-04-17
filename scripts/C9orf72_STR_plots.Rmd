@@ -1,0 +1,177 @@
+---
+title: "C9 STR plots"
+output: html_document
+date: "2025-08-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(patchwork)
+```
+
+Get GWAS lead SNP in
+
+```{r}
+library(vcfR)
+vcf <- read.vcfR("data/STR/rs2453555.all_samples.vcf")  
+vcf@fix
+c9_snp_df <- as.data.frame(vcf@gt) %>% pivot_longer(names_to= "sample", values_to = "genotype", cols = !c(FORMAT)) %>%
+  select(-FORMAT) %>%
+  mutate(genotype = gsub(":.*", "", genotype)) %>%
+  mutate(allele = case_when(
+    genotype == "0/0" ~ "G/G",
+    genotype == "0/1" ~ "G/A",
+    genotype == "1/1" ~ "A/A"
+  )) %>%
+  mutate(allele = factor(allele, levels = c("G/G", "G/A", "A/A"))) %>%
+  mutate(sample = gsub("-", ".", sample))
+
+table(c9_snp_df$allele)
+```
+
+
+
+```{r}
+c9_min <- read.table("data/STR/c9data/c9_EH_call_min_allele.tsv", header=TRUE)
+c9_max <- read.table("data/STR/c9data/c9_EH_call_max_allele.tsv", header=TRUE)
+#c9_snp <- read.table("data/STR/c9data/c9_snp.tsv", header=TRUE)
+tissue_labels <- readxl::read_excel("data/QTL/tissue_labels.xlsx")
+
+c9_str_len_df <- c9_max %>%
+  pivot_longer(names_to = "sample", values_to = "max_call", cols = !c(REPID)) %>%
+  select(-REPID)
+
+c9_meta_df <- inner_join(c9_str_len_df, c9_snp_df, by = "sample")
+
+psi_files <- list.files("data/STR/c9data/", pattern = "c9_psi*", full.names = TRUE)
+str_files <- list.files("data/STR/c9data/", pattern = "c9_categorized*", full.names = TRUE)
+
+make_tables <- function(n){
+  d1 <- read.table(psi_files[n], header=TRUE)
+  d2 <- read.table(str_files[n], header=TRUE)
+  
+  tissue <- gsub("c9_psi_|.tsv", "", basename(psi_files[n]))
+  psi_df <- d1 %>%
+    pivot_longer(names_to = "sample", values_to = "psi", cols = !c(chr, start, end, feature))
+  group_df <- d2 %>%
+    pivot_longer(names_to = "sample", values_to = "str_group", cols = !c(REPID))
+  
+  all_df <- inner_join(psi_df, group_df, by = "sample") %>%
+    left_join(c9_meta_df, by = "sample") 
+  all_df$tissue <- tissue
+  return(all_df)
+}
+
+
+all_plots <- function(Tissue){
+  all_df <- filter(all_table, tissue == Tissue)
+  tissue_label <- tissue_labels$short[match(Tissue, tissue_labels$tissue)]
+  plot <-
+    ## repeat against PSI
+    all_df %>%
+    ggplot(aes(x = max_call, y = psi)) + geom_point(aes(colour = factor(str_group) ), size = 0.5 ) + 
+    geom_smooth(method = "lm", colour = "black") +
+    scale_x_log10() +
+    labs(colour = "STR group", x = "C9orf72 repeat length", y = "Residual PSI", title = tissue_label) +
+    theme_classic() +
+    guides(colour = "none") +
+    
+    ## genotype against PSI
+    all_df %>%
+    ggplot(aes(x = allele, y = psi)) + 
+    geom_jitter(aes(colour = as.factor(str_group) ), width = 0.25, height = 0, size = 0.5) +
+    geom_boxplot(outlier.color = NA, fill = NA) + 
+    labs(x = "rs2453555", y = "Residual PSI", colour = "STR group") +
+    theme_classic() +
+    guides(colour = "none") +
+    
+    plot_layout(guides = "collect", widths = c(1.2,1)) &
+    scale_color_viridis_d(direction = -1) &
+    #scale_color_brewer(type = "div", palette = 9 ) &
+    theme(axis.text = element_text(colour = "black"), axis.ticks = element_line(colour = "black"))
+  
+  return(plot)
+}
+
+all_table <- map_df(1:length(psi_files), make_tables)
+
+fc_plot <- all_plots("Frontal_Cortex")
+fc_plot
+
+all_plots("Cervical_Spinal_Cord")
+
+
+ggsave(plot = fc_plot, filename = "data/STR/c9orf72_str_snp_plot_frontal_cortex.pdf", width = 6, height =3)
+
+tissues <- gsub("c9_psi_|.tsv", "", basename(psi_files))
+
+tissues_clean <- c("Cerebellum", "Lateral_Motor_Cortex",  "Medial_Motor_Cortex", "Motor_Cortex_BA4unspecified", "Cervical_Spinal_Cord","Lumbar_Spinal_Cord")
+
+supp_plot <- wrap_plots(map(tissues_clean, all_plots), ncol = 2, nrow = 3 )
+
+ggsave(plot = supp_plot, filename = "data/STR/c9orf72_str_snp_supp_tissues.pdf", width = 6, height = 6)
+
+
+## for all 436 donors plot density of repeat and relationship with genotype
+ 
+## genotype against repeat - for all donors
+geno_repeat_plot <- all_table %>%
+  select(sample, allele, max_call, str_group) %>%
+  distinct() %>%
+  ggplot(aes(x = allele, y = max_call)) + 
+  geom_jitter(aes(colour = factor(str_group) ), width = 0.25, height = 0, size = 0.5) + 
+  geom_boxplot(fill = NA, outlier.colour = NA) + 
+  scale_y_log10() +
+  #coord_flip() +
+  labs(x = "rs2453555", y = "C9orf72 repeat length", colour = "STR group") +
+  theme_classic() +
+  coord_flip() +
+  scale_color_viridis_d(direction = -1) +
+  #scale_color_brewer(type = "div", palette = 9 ) &
+  theme(axis.text = element_text(colour = "black"), axis.ticks = element_line(colour = "black"))+
+  guides(colour = "none")
+
+## repeat density plot
+c9_dist_plot <- all_table %>%
+      select(sample, allele, max_call, str_group) %>%
+      distinct() %>%
+    ggplot(aes(x = max_call)) + geom_density(aes(fill = factor(str_group) ), alpha = 0.75) +
+    scale_x_log10() +
+    labs(fill = "STR group", x = "C9orf72 repeat length") +
+    theme_classic() +
+    guides(colour = "none") +
+  scale_color_viridis_d(direction = -1) +
+  scale_fill_viridis_d(direction = -1) +
+  #scale_color_brewer(type = "div", palette = 9 ) &
+  theme(axis.text = element_text(colour = "black"), axis.ticks = element_line(colour = "black"))+
+  guides(fill = "none")
+
+all_table %>%
+      select(sample, allele, max_call, str_group) %>%
+      distinct() %>% 
+    group_by(str_group) %>%
+  tally()
+
+ggsave(plot = geno_repeat_plot, filename = "data/STR/c9orf72_str_snp_cor_plot.pdf", width = 3, height = 1.5)
+
+ggsave(plot = c9_dist_plot, filename = "data/STR/c9orf72_str_dist_plot.pdf", width = 3, height = 2.5)
+
+```
+
+
+Get P-values
+
+```{r}
+junction <- "chr9_27567164_27573708"
+# COLOC
+coloc_res <- read_tsv("data/QTL/COLOC/NYGC_all_tissues_VanRheenen_ALL_2021_colocalization_results.tsv.gz")
+c9_coloc <- filter(coloc_res, gene_name == "C9orf72", GWAS == "VanRheenenALL_2021", type == "sQTL", feature == junction)
+
+## STR-QTLs
+str_res <- read_tsv("data/STR/all_STR_QTL_results.tsv.gz")
+c9_str <- filter(str_res, gene_symbol == "C9orf72", type == "sQTL", phenotype_id == junction)
+
+
+```
+

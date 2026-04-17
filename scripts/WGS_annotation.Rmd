@@ -1,0 +1,476 @@
+---
+title: "Matt Harms WGS Insights"
+author: "Jack Humphrey"
+date: "2026-02-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(patchwork)
+library(UpSetR)
+```
+
+```{r}
+dna_old <- readxl::read_excel("Metadata/ALS Consortium WGS Metadata 022723.xlsx")
+rna <- readxl::read_excel("Metadata/ALS Consortium RNAseq Metadata 02212023.xlsx") %>% janitor::clean_names()
+
+dna <- readxl::read_excel("../../Manuscripts/NYGC_Flagship/Tables/ALS_all_supplemental_tables_updated_March_16_2026.xlsx", sheet = 2) %>% janitor::clean_names()
+
+# waiting for Maria to put the CGND DNA IDs back in
+#rna <- readxl::read_excel("../../Manuscripts/NYGC_Flagship/Tables/RNA_Supp_Tables/ALS_all_supplemental_tables_updated_March_16_2026.xlsx", sheet = 4) %>% janitor::clean_names()
+
+harms <- readxl::read_excel("Harms_WGS/Harms Path and LP genotypes in dataset 2-22-2026.xlsx") %>% janitor::clean_names()
+# fix 5 IDs that got mangled
+harms <- harms %>%
+  mutate(participant = ifelse( grepl("^HDA", participant), paste0("CGND-HDA-0", gsub("HDA", "", participant) ), participant) )
+
+# add RNA 
+harms$external_subject_id <- dna$subject_id[match(harms$participant, dna$cgnd_id)]
+harms$rna <- harms$external_subject_id %in% rna$external_subject_id
+
+  
+table(harms$participant %in% dna$cgnd_id)
+table(harms$participant %in% rna$external_subject_id)
+harms$external_subject_id <- dna$subject_id[match(harms$participant, dna$cgnd_id)]
+
+
+harms_rna <- filter(harms, rna ==TRUE)
+#harms_answer <- filter(harms, project == "Answer ALS" )
+table(harms_rna$gene1)
+
+harms_rna_c9 <- filter(harms_rna, gene1 == "C9ORF72")
+rna$harms_c9 <- rna$external_subject_id %in% harms_rna_c9$external_subject_id
+
+table(rna$sample_source, rna$harms_c9)
+
+```
+
+
+Fix any bugs or typos
+
+```{r}
+#chr1_11022533_G/A - TARDBP mutation but listed as C9
+harms$gene2[which(harms$var_id2 == "chr1_11022533_G/A")] <- "TARDBP"
+
+```
+
+
+ALS-FTD and FTD
+
+Clean up C9 and ATXN2
+
+Using 30 repeats as pathogenic C9 threshold
+
+```{r}
+c9_calls <- 
+  filter(harms, gene1 == "C9ORF72" | gene2 == "C9ORF72") %>%
+  select(participant, protein1, protein2)
+
+c9_calls$c9_1 <- as.numeric(gsub("EH-", "", c9_calls$protein1))
+c9_calls$c9_2 <- as.numeric(gsub("EH-", "", c9_calls$protein2))
+c9_calls$C9_EH_call <- coalesce(c9_calls$c9_1, c9_calls$c9_2)
+
+harms$C9_EH_call <- c9_calls$C9_EH_call[match(harms$participant, c9_calls$participant)]
+
+#select(harms, -starts_with("x")) %>% View()
+
+harms <- mutate(harms, gene1 = case_when(
+  gene1 == "ATXN2" & grepl("Full", comments1) ~ "ATXN2(≥34)",
+  gene1 == "ATXN2" & !grepl("Full", comments1) ~ "ATXN2(31-33)",
+  gene1 == "C9ORF72" & grepl("Full", comments1) | C9_EH_call >=30 ~ "C9orf72",
+  gene1 == "C9ORF72" & !grepl("Full", comments1) ~ "C9orf72(20-29)",
+  TRUE ~ gene1
+)) %>%
+  mutate(gene2 = case_when(
+    gene2 == "ATXN2" & grepl("Full", comments2) ~ "ATXN2(≥34)",
+    gene2 == "ATXN2" & !grepl("Full", comments2) ~ "ATXN2(31-33)",
+    gene2 == "C9ORF72" & (grepl("Full", comments2) | C9_EH_call >=30) ~ "C9orf72",
+    gene2 == "C9ORF72" & (!grepl("Full", comments2) | (C9_EH_call >= 20 & C9_EH_call <30) ) ~ "C9orf72(20-29)",
+    TRUE ~ gene2
+  )) 
+
+harms <- mutate(harms, disease_group = case_when(
+  phenotype_details %in% c("Classical/Typical ALS", "Amyotrophic Lateral Sclerosis (ALS)", "ALS Spectrum MND") ~ "ALS",
+  phenotype_details %in% c(
+    "Frontotemporal Dementia (FTD)", 
+    "Behavioral Variant Frontotemporal Dementia (bvFTD)", 
+    "Behavioral Variant Frontotemporal Dementia (bvFTD)", 
+    "Behavioral Variant Frontotemporal Dementia (bvFTD)",
+    "Behavioral Variant Frontotemporal Dementia (bvFTD), Semantic Variant Primary Progressive Aphasia (svPPA)",
+    "Frontotemporal Dementia (FTD)",
+    "Dementia (NOS)",
+    "Non-Fluent/Agrammatic Variant Primary Progressive Aphasia (naPPA)",
+    "Dementia (NOS), Progressive Aphasia",
+    "Logopenic Variant Primary Progressive Aphasia (lvPPA)",
+    "Non-Fluent/Agrammatic Variant Primary Progressive Aphasia (naPPA), Frontotemporal Dementia (FTD)"
+  ) ~ "FTD",
+  phenotype_details %in% c(
+    "Classical/Typical ALS, Frontotemporal Dementia (FTD)",
+    "Classical/Typical ALS, Behavioral Variant Frontotemporal Dementia (bvFTD), Progressive Aphasia",
+    "Classical/Typical ALS, Alzheimer's Disease (AD), Frontotemporal Dementia (FTD)",
+    "Classical/Typical ALS, Frontotemporal Dementia (FTD), Metastatic Carcinoma, Superior Parietal Lobe, Left",
+    "Classical/Typical ALS, Frontotemporal Dementia (FTD), Parkinson's Disease (PD)",
+    "Classical/Typical ALS, Non-Fluent/Agrammatic Variant Primary Progressive Aphasia (naPPA)",
+    "Amyotrophic Lateral Sclerosis (ALS), Dementia (NOS)",
+    "Classical/Typical ALS, Alzheimer's Disease (AD)",
+    "Classical/Typical ALS, Dementia (NOS)",
+    "Classical/Typical ALS, Mild Cognitive Impairment (MCI)",
+    "Classical/Typical ALS, Mild Cognitive Impairment (MCI), Myasthenia Gravis",
+    "Classical/Typical ALS, Chronic Traumatic Encephalopathy (CTE)",
+    "Classical/Typical ALS, Behavioral Variant Frontotemporal Dementia (bvFTD)"
+  ) ~ "ALS-FTD",
+  grepl("Pre-fALS", phenotype_details) | phenotyp == "Pre-fALS" ~ "Pre-fALS",
+  phenotype_details == "Spinal Bulbar Muscular Atrophy (SBMA)" ~ "SBMA",
+  phenotype_details %in% c(
+    "Primary Lateral Sclerosis (PLS), Frontotemporal Dementia (FTD)",
+    "MND (unspecified, non-ALS ALS Spectrum MND), Frontotemporal Dementia (FTD)",
+    "Progressive Bulbar Palsy (PBP)",
+    "Progressive Bulbar Palsy",
+    "Progressive Muscular Atrophy (PMA)",
+    "Primary Lateral Sclerosis (PLS)"
+  ) ~ "Other MND",
+  phenotyp == "Non-Neurological Control" ~ "Control",
+  TRUE ~ "Other"
+))
+
+## fix oligogenics
+harms_oligo <- 
+  filter(harms, category_2 %in% c("Oligo", "Driver Oligo", "Bi-allelic", "Homozyogus", "Recessive")
+  ) %>%
+  split(.$participant) %>%
+  map_df( ~{
+    g1 <- .x$gene1
+    g2 <- .x$gene2
+    if(is.na(g2)){ g2 <- g1}
+    if(is.na(g1)){g1 <- g2}
+    
+    if(g1==g2 ){
+      .x$gene1 <- paste0(g1, "+", g2)
+    }else{
+      .x$gene1 <- paste( sort( c(g1, g2) ), collapse = "+" )
+    }
+    return(.x)
+  }
+  ) # n = 33
+harms$gene <- harms$gene1
+harms$gene[ match(harms_oligo$participant, harms$participant) ] <- harms_oligo$gene1
+
+table(harms$disease_group)
+table(harms$gene, harms$disease_group)
+
+
+filter(harms, grepl("C9orf72", gene) ) %>%
+  ggplot(aes(x = disease_group, y = C9_EH_call)) + geom_point(aes(colour = gene)) + coord_flip() + scale_y_log10()
+
+filter(harms, grepl("C9orf72", gene), disease_group == "ALS" ) %>%
+  mutate(age_at_onset = as.numeric(age_at_onset)) %>%
+  mutate(oligo = grepl("\\+", gene)) %>%
+  ggplot(aes(x = age_at_onset, y = C9_EH_call)) + geom_point(aes(colour = oligo)) + facet_wrap(~disease_group) +
+  facet_wrap(~oligo)
+
+
+filter(harms, grepl("C9orf72", gene), disease_group == "Other")
+```
+
+
+976 WGS samples annotated by Matt Harms
+
+Breakdown by gene in ALS patients
+
+Multiple categories of genes
+
+1. definite dominant ALS genes (C9, FUS, SOD1, etc) with clnsig1 set as "P" or "P/LP" or "LP"
+  Several TARDBP mutations have "Revised to LP" or "Revised to P". One FUS mutation is "Revised from P to VUS" and should be excluded.
+ - C9 and ATXN2 should have their repeat thresholds in the plot
+ - ATXN2, 45 cases, of which 38 have intermediate expansions (31-33) and 7 have pathogenic expansions (>34)
+ 
+ - some of these are only seen in 1 patient (CHMP2B, MAPT) and are suspect due to links with other diseases
+
+- patient is het for a recessive mutation (SETX, SPG11, SLC52A2, SLC52A3)
+
+Build decision tree
+how many ALS patients total?
+of which how many had a genetic assessment?
+
+of those, how many had:
+- definite dominant variant
+- heterozygous for a recessive variant
+- likely mimics (HTT, etc)
+- uncertain variant
+
+For each type, list the genes, split the C9 and ATXN2 into full and intermediate expansions
+
+```{r}
+harms <- mutate(harms, mutation_type = case_when(
+  # dominant
+  gene1 != "ATXN2(≥34)" &
+  category_2 == "Single Variant" &
+  !grepl("imic", status1) &
+  !grepl("Paget", comments1) &
+  !grepl("recessive", comments1) ~ "single dominant variant",
+  # recessives
+  category_2 == "Single Variant" &
+  grepl("recessive", comments1) & 
+  !grepl("imic", status1) ~ "recessive variant",
+  #mimics
+  category_2 == "Single Variant" &
+  (grepl("imic", status1) | grepl("Paget", comments1) | gene1 == "ATXN2(≥34)") ~ "potential mimic",
+  #oligogenic
+  category_2 %in% c("Oligo", "Driver Oligo", "Bi-allelic", "Homozyogus", "Recessive") ~ "oligogenic"
+))
+
+```
+
+Check C9 numbers
+
+WGS Metadata is wrong! Known issue, Anna and Maria will fix.
+
+Once I have this I can remake the C9 distribution plot with the new thresholds 20-33 and >34
+
+```{r}
+c9 <- filter(harms, grepl("C9orf72", gene) )
+# 490 donors have C9 listed by Matt
+c9 <- select(c9, -starts_with("x") )
+# add prep info
+c9$prep <- dna$prep[match(c9$participant, dna$cgnd_id)]
+table(c9$prep)
+
+#c9$C9_EH_call <- 
+  
+# get expansionHunter info
+c9_eh_call <- dna$c9_repeat_size
+c9_eh_call <- str_split_fixed(c9_eh_call, "/", 2)
+dna$c9_eh_call <- pmax( as.numeric(c9_eh_call[,1]), as.numeric(c9_eh_call[,2]))
+
+
+dna %>%
+  ggplot(aes(x = prep, y = c9_eh_call)) + geom_point()
+
+table(dna$c9_eh_call >= 34, dna$prep) # 314
+table(dna$c9_eh_call > 20 & dna$c9_eh_call < 34) #13
+
+dna <- mutate(dna, prep_type = case_when(prep %in% c("PCR-Free", "TruSeq PCR-Free") ~ "PCR-free", TRUE ~ "PCR+" ) )
+table(dna$prep_type)
+
+table(dna$c9_eh_call == 0)
+max(dna$c9_eh_call, na.rm = TRUE)
+
+filter(dna, c9_eh_call > 34) %>% pull(c9_eh_call) %>% median()
+
+# remake C9 distribution plot with new cutoffs
+c9_plot <- dna %>%
+  filter(!is.na(c9_eh_call) ) %>%
+  ggplot(aes(x = 1, y = c9_eh_call )) + 
+  geom_violin(trim = TRUE, scale = "count") + 
+  geom_jitter(data = filter(dna, c9_eh_call > 20), aes(fill = prep_type), width = 0.2, height = 0, shape = 21) +
+  labs(fill = "WGS prep", x = "", y = "Estimated C9orf72 repeat length") +
+  scale_y_log10(breaks = c(2, 5, 10, 20, 34, 100, 325, 1198)) +
+  geom_hline(yintercept = c(20,34), linetype = 2) +
+  theme_classic(base_size = 12) +
+  theme(legend.position = "bottom", 
+        legend.direction = "vertical",
+        axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank(), 
+        axis.text = element_text(colour = "black") ) +
+  scale_fill_manual(values = c("darkgray", "red"))
+ggsave(plot = c9_plot, filename = "plots/eh_c9_plot_apr26.pdf", width = 2, height = 7 )
+
+c9$c9_eh_call <- dna$c9_eh_call[match(c9$participant, dna$cgnd_id)]
+
+table(c9$c9_eh_call, c9$gene1)
+
+c9$true_eh_call <- as.numeric(gsub("EH-", "", c9$protein1))
+
+c9 %>%
+  ggplot(aes(x = gene, y = true_eh_call)) + geom_point()
+
+group_by(c9, gene) %>% slice_min(true_eh_call, n = 1, with_ties = FALSE) %>%
+  select(gene, true_eh_call)
+
+```
+
+314 donors found with C9 > 34
+
+
+```{r}
+harms_als <- filter(harms, disease_group == "ALS") # 658
+# split ATXN2 and C9orf72 into intermediate and expanded
+# combine oligogenic genes
+
+# atxn2 <- filter(harms_als, gene1 == "ATXN2")
+# c9 <- filter(harms_als, gene1 == "C9ORF72")
+harms_als_def <- filter(harms_als, mutation_type == "single dominant variant")
+harms_als_recess <- filter(harms_als, mutation_type ==  "recessive variant")
+harms_als_mimic <- filter(harms_als, mutation_type ==  "potential mimic")
+harms_als_oligo <- filter(harms_als, mutation_type == "oligogenic")
+
+
+upset(fromList( list(def = harms_als_def$participant, recess = harms_als_recess$participant, mimic = harms_als_mimic$participant, oligo = harms_als_oligo$participant)) )
+
+```
+
+Plot total gene assignment for WGS and RNA cohort
+
+```{r}
+rna_total <- filter(rna, subject_group == "ALS Spectrum MND" & subject_group_subcategory == "Classical/Typical ALS") %>% pull(external_subject_id) %>% unique() %>% length() # 471
+rna_gene <- sum(harms_als$rna) # 103
+
+dna_total <- dna %>% filter(subject_group == "ALS Spectrum MND" & subject_group_subcategory == "Classical/Typical ALS") %>% nrow()
+dna_gene <- nrow(harms_als)
+
+compare_df <- data.frame(
+  type = c("WGS", "RNA-seq"),
+  total = c(dna_total, rna_total),
+  positive = c(dna_gene, rna_gene)
+) 
+compare_df
+compare_df %>%
+  mutate(type_label = paste0(type, "\n(", total, ")")) %>%
+  mutate(prop = positive/total) %>%
+  mutate(prop = signif(100*prop, 3) ) %>%
+  ggplot(aes(x = type_label, y = prop)) + 
+  geom_col(aes(fill = type), colour = "black", alpha = 0.5) +
+  geom_col(aes(y = prop, fill = type), colour = "black" ) +
+  #geom_text(aes(y = total, label = total), colour = "black", nudge_y =5) +
+  geom_text(aes(y = prop, label = prop)) + coord_flip() +
+  #scale_y_continuous(expand = c(0,0), transform = "log10" ) +
+  scale_fill_manual(values = c("red","gray60")) + 
+  theme_classic() +
+  theme(axis.text.y = element_text( colour = "black"))
+  
+compare_df
+
+```
+
+
+Make multiplot for the 4 groups
+
+
+```{r}
+make_gene_plot <- function(data, mytitle = "", log10 = TRUE, clump = 0, guide = TRUE){
+  gene_tally <- data %>%
+    group_by(gene) %>%
+    tally()
+  # clump genes with only 1 donor
+  if(clump > 0){
+  gene_other <- filter(gene_tally, n == clump)
+  data$gene <- ifelse(data$gene %in% gene_other$gene, "Other", data$gene)
+  }else{
+    data$gene <- data$gene
+  }
+  total_tally <- data %>%
+    group_by(gene) %>%
+    tally(name = "total") %>%
+    arrange(total, desc(gene))
+  
+  rna_tally <- data %>%
+    filter(rna == TRUE) %>%
+    group_by(gene) %>%
+    tally(name = "rna")
+  
+  all_tally <- left_join(total_tally, rna_tally, by = "gene") %>%
+    #arrange(desc(gene), total ) %>%
+    mutate(gene = factor(gene, levels = total_tally$gene)) %>%
+    pivot_longer(names_to = "type", values_to = "n", cols = !c(gene))# %>%
+    #drop_na()
+  
+  if(clump >0){
+    all_tally <- all_tally %>%
+    mutate(gene = forcats::fct_relevel(gene, "Other" ))
+  }
+  
+  p <- all_tally %>%
+    ggplot(aes(y = gene, x = log10(n + 1), fill = type )) + 
+    geom_col(data = filter(all_tally, type == "total"), colour = "black",width = 0.8 ) +
+    #geom_col(aes(x = log10(rna + 1)), fill = "firebrick") +
+    geom_col(data = filter(all_tally, type == "rna"), colour = "black", width = 0.8) +
+    geom_text(
+      data = filter(all_tally, type == "total"),
+      aes(label = n, x = log10(n+1), y = gene ), hjust = 0, colour = "black", nudge_x = 0.025) + 
+    geom_text(
+      data = filter(all_tally, type == "rna"),
+      aes(x = log10(n +1), label = n, y = gene), hjust = 1, colour = "white", nudge_x = -0.05) + 
+    #scale_x_log10() +
+    labs(x = "Donors", y ="", title = mytitle, subtitle = paste0("n = ", nrow(data) )) +
+    scale_x_continuous(
+      #expand = c(0,0), 
+                       expand = expansion(mult = c(0, 0.15)),
+                       breaks = log10( c(1, 10, 100, 1000) + 1),
+                       labels = c(1, 10, 100, 1000)
+    ) +
+    theme_classic() +
+    theme(axis.text.y = element_text(face = "italic", colour = "black"),
+          axis.text.x = element_text(colour = "black"),
+          plot.title = element_text(size = 11, colour = "black", margin = margin(0, 0, 2, 15)),
+          plot.subtitle = element_text(size = 9, colour = "black", margin = margin(2, 0, 6, 15)),
+          plot.title.position = "plot"
+          ) +
+    scale_fill_manual(values = c("firebrick","dodgerblue4"), labels = c("rna" = "WGS + RNA-seq", "total" = "WGS only") )
+  if(guide == FALSE){
+    p <- p + guides(fill = "none")
+  }
+  return(p)
+}
+
+```
+
+Make glorious multiplot for main figure
+
+```{r}
+multiplot <- (
+  ( make_gene_plot(harms_als_def, "Single variant in dominant gene", log10 = TRUE, clump = 1, guide = FALSE) ) / (
+  make_gene_plot(harms_als_recess, "Single variant in recessive gene", log10 = TRUE, clump = 1, guide = FALSE ) +
+  make_gene_plot(harms_als_mimic, "Potential ALS mimic", log10 = TRUE, clump = 0, guide = FALSE)
+  ) + plot_layout(heights = c(14,8) ) |  
+    make_gene_plot(harms_als_oligo, "Multiple variants", log10 = TRUE, clump = 0, guide = TRUE)
+) +
+  plot_layout(widths = c(1,0.2))
+
+ggsave(plot = multiplot, filename = "plots/harms_wgs_annotation_multiplot.pdf", width = 10, height = 8)
+
+multiplot
+
+
+```
+
+Other diseases for supplement
+
+```{r}
+other_plot <- 
+make_gene_plot(filter(harms, disease_group == "ALS-FTD"), "ALS-FTD") +
+
+make_gene_plot(filter(harms, disease_group == "FTD"), "FTD") +
+make_gene_plot(filter(harms, disease_group == "SBMA"), "SBMA") +
+make_gene_plot(filter(harms, disease_group == "Other MND"), "Other MND") +
+  plot_layout(heights = c(8,12,2,14), guides = "collect")
+
+other_plot
+  
+ggsave(plot = other_plot, filename = "plots/harms_wgs_annotation_other_diseases.pdf", width = 6, height = 10)
+
+
+```
+
+Write out table for supplement
+
+
+```{r}
+t(harms[1,])
+harms_supp_df <- select(harms, 
+                        ExternalSubjectId = external_subject_id, 
+                        ExternalSampleId = participant, 
+                        `Disease Group` = disease_group, 
+                        `Subject Group` = phenotyp, `Subject Group Subcategory` = phenotype_details, 
+                        `RNA-seq` = rna, 
+                     `Mutation Group` = mutation_type, `Mutation Type` = category_2, 
+                     Mutation = gene, 
+                     `Variant ID 1` = var_id1, `Zygosity 1` = zygosity1, `Gene 1` = gene1, `cDNA 1` = c_dna1, `Protein 1` = protein1, `Status 1` = status1, `Clinical significance 1` = clnsig1, `ClinVar allele ID 1` = clin_var_allele_id1, `Comments 1` = comments1,
+                     `Variant ID 2` = var_id2, `Zygosity 2` = zygosity2, `Gene 2` = gene2, `cDNA 2` = c_dna2, `Protein 2` = protein2, `Status 2` = status2, `Clinical significance 2` = clnsig2, `ClinVar allele ID 2` = clin_var_allele_id2, `Comments 2` = comments2)
+
+writexl::write_xlsx(harms_supp_df, path = "Harms_WGS/WGS_Harms_annotation_cleaned.xlsx")
+```
+
+

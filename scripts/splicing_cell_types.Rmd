@@ -1,0 +1,83 @@
+---
+title: "Leafcutter results"
+author: "Jack Humphrey"
+date: "2025-06-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readxl)
+```
+
+Alex's Leafcutter results
+
+How to get some idea of cell-type specificity?
+
+```{r}
+d <- readxl::read_excel("data/splicing/als_diffsplice_supp_tables_v3.xlsx",sheet = 1)
+
+kelley <- read_tsv("data/splicing/kelley_marker_gene_fidelity_all_tissues_combined.tsv.gz")
+
+table(kelley$set)
+kelley_df <- kelley %>%
+  mutate(set = gsub("ALL_", "", set)) %>%
+  pivot_wider(names_from = set, values_from = fidelity)
+
+
+d <- left_join(d, kelley_df, by = c("tsg_gene_name" = "Gene"))
+
+## alex method
+
+df <- select(d, tissue, gene = tsg_gene_name, padj = p.adjust, marker_max_top) %>%
+  mutate(marker_max_top = gsub(" .*", "", marker_max_top)) %>%
+  group_by(tissue, gene) %>%
+  slice_min(padj, n =  1) %>%
+  drop_na()
+
+total_df <- group_by(df, tissue) %>% tally(name = "total")
+
+df %>%
+  group_by(tissue, marker_max_top) %>%
+  tally() %>%
+  left_join(total_df) %>%
+  mutate(prop = n / total) %>%
+  ggplot(aes(x = tissue, y = marker_max_top)) + geom_tile(aes(fill = prop)) +
+  ggeasy::easy_rotate_x_labels(angle = 45, side = "right")
+
+
+#  geom_bar() + facet_wrap(~tissue, scales = "free") + coord_flip() 
+
+
+## kelley method
+
+df2 <- select(d, tissue, gene = tsg_gene_name, padj = p.adjust, Astrocyte, Oligodendrocyte, Microglia, Neuron) %>%
+  group_by(tissue, gene) %>%
+  slice_min(padj, n =  1) %>%
+  drop_na()
+
+df2 %>%
+  pivot_longer(names_to = "cell_type", values_to = "value", cols = !c(tissue, gene, padj) ) %>%
+  group_by(tissue, gene) %>%
+  slice_max(value, n = 1) %>%
+  ggplot(aes(x = cell_type)) + geom_bar() + facet_wrap(~tissue)
+
+```
+
+
+Duration-associated splicing changes
+
+```{r}
+dur_df <- readxl::read_excel("data/splicing/als_diffsplice_supp_tables_v3.xlsx", sheet = "als_duration_clusters")
+dur_junc <- readxl::read_excel("data/splicing/als_diffsplice_supp_tables_v3.xlsx", sheet = "als_duration_introns")
+
+group_by(dur_df, tsg_gene_name) %>% tally() %>% arrange(desc(n)) %>% View()
+
+filter(dur_df, tsg_gene_name == "STMN2")
+filter(dur_junc, tsg_gene_name == "STMN2")
+
+
+filter(dur_junc, tsg_gene_name == "PTPRN2") %>% View()
+```
+

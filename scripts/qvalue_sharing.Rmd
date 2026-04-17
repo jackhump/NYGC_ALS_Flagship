@@ -1,0 +1,72 @@
+---
+title: "qvalue sharing"
+author: "Jack Humphrey"
+date: "2025-08-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+library(patchwork)
+```
+
+```{r}
+tissue_labels <- readxl::read_excel("data/QTL/tissue_labels.xlsx") %>%
+  mutate(label = gsub(" ", "_", label))
+eq <- read_tsv("data/QTL/qvalue/all_eQTL_qvalue_merged.0.05.tsv")
+sq <- read_tsv("data/QTL/qvalue/all_sQTL_qvalue_merged.0.05.tsv")
+
+clean_qvalue <- function(data){
+  data %>%
+  mutate(source_tissue = gsub("tensorQTL_NYGC_|_EUR_.*QTL", "", source_name)) %>%
+  mutate(target_tissue = gsub("tensorQTL_NYGC_|_EUR_.*QTL", "", target_name)) %>%
+  mutate(source = tissue_labels$short[match(.$source_tissue, tissue_labels$tissue)]) %>%
+  mutate(target = tissue_labels$short[match(.$target_tissue, tissue_labels$tissue)]) %>%
+  mutate(source_label = tissue_labels$label[match(.$source_tissue, tissue_labels$tissue)]) %>%
+  mutate(target_label = tissue_labels$label[match(.$target_tissue, tissue_labels$tissue)]) %>%
+  mutate(type = ifelse(grepl("eQTL", source_name), "eQTL", "sQTL")) %>%
+  filter(!source_tissue %in% c("hippocampus", "occipital_cortex", "thoracic_spinal", "temporal_cortex")) %>%
+  filter(!target_tissue %in% c("hippocampus", "occipital_cortex", "thoracic_spinal", "temporal_cortex")) %>%
+  mutate(pi1 = ifelse(source == target, 1, pi1)) %>%
+  mutate(pi1 = signif(pi1, 2))
+}
+
+eq_df <- clean_qvalue(eq)
+sq_df <- clean_qvalue(sq)
+
+
+eq_df %>%
+  select(source, target, pi1) %>%
+  mutate(pi1 = ifelse(is.na(pi1), 1, pi1)) %>%
+  pivot_wider(names_from = target, values_from = pi1) %>%
+  column_to_rownames("source") %>%
+  pheatmap::pheatmap()
+
+eq_df %>%
+  ggplot(aes(x = source, y = target, fill = pi1, label = pi1)) + geom_tile() + geom_text(colour = "white") +
+  scale_fill_viridis_c() + 
+  ggeasy::easy_rotate_x_labels(angle = 45, side = "right")
+
+qvalue_plot <- bind_rows(eq_df, sq_df) %>%
+  ggplot(aes(x = source, y = target, fill = pi1, label = pi1)) + geom_tile(colour = "black", size = 0.5) + geom_text(colour = "white") +
+  scale_fill_viridis_c() + 
+  ggeasy::easy_rotate_x_labels(angle = 45, side = "right") +
+  scale_x_discrete(expand = c(0,0)) +
+  scale_y_discrete(expand = c(0,0)) +
+  labs(fill = expression(pi[1])) + 
+  facet_wrap(~type, nrow = 2) +
+  theme(strip.background = element_blank(), axis.text = element_text(colour = "black"), axis.ticks = element_line(colour = "black") )
+
+ggsave(plot = qvalue_plot, filename = "data/QTL/qvalue_plot.pdf", height = 8, width = 4.5)
+
+qvalue_plot
+
+table_df <- bind_rows(eq_df, sq_df) %>%
+  select(qtl_type = type, source_tissue = source_label, source_label = source, target_tissue = target_label, target_label = target, pi1) 
+write_csv(table_df, "data/QTL/nygc_flagship_qvalue_table.csv")
+
+table_df
+```
+

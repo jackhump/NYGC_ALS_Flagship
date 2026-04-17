@@ -1,0 +1,136 @@
+---
+title: "Explore STR QTLs"
+author: "Jack Humphrey"
+date: "2025-06-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+tissue_df <- readxl::read_excel("data/QTL/tissue_labels.xlsx")
+```
+
+STR-eQTLs
+
+```{r}
+eq <- readxl::read_excel("data/STR/clinicalSTR_seq_corrected/egene-evariant_all_tissues_combined.xlsx")
+
+eq <- left_join(eq, tissue_df, by = c("Tissue" = "tissue"))
+
+eq %>%
+  mutate(Tissue = gsub("_", "\n", Tissue)) %>%
+  ggplot(aes(x = short, y = gene_symbol)) + geom_point(aes(colour = -log10(qval))) + facet_grid(variant_id~., scales = "free", space = "free")
+
+```
+
+STR-sQTLs
+
+```{r}
+sp <- readxl::read_excel("data/STR/clinicalSTR_seq_corrected/sgene-svariant_all_tissues_combined.xlsx")
+sp <- left_join(sp, tissue_df, by = c("Tissue" = "tissue"))
+
+# group sQTLs into genes by taking top association
+sp_gene <- sp %>%
+  group_by(Tissue, gene_symbol) %>%
+  slice_min(qval, n = 1, with_ties = FALSE)
+
+sp_gene %>%
+  mutate(Tissue = gsub("_", "\n", Tissue)) %>%
+  ggplot(aes(x = short, y = gene_symbol)) + geom_point(aes(colour = -log10(qval))) + facet_grid(variant_id~., scales = "free", space = "free")
+
+```
+
+Combine
+
+```{r}
+combine <- bind_rows(
+  sp_gene %>% mutate(type = "sQTL"),
+  eq %>% mutate(type = "eQTL")
+) %>%
+  mutate(Tissue = gsub("Motor_Cortex_BA4unspecified", "Other\nMotor\nCortex", Tissue)) %>%
+  mutate(Tissue = gsub("_", "\n", Tissue)) %>%
+  filter(!Tissue %in% c("Hippocampus", "Temporal\nCortex")) %>%
+  filter(!short %in% c("OCX", "TSC"))
+
+# remove any genes with only 1 QTL
+gene_tally <- combine %>%
+  group_by(variant_id, gene_symbol) %>%
+  tally()
+
+#filter(gene_tally, n == 1)
+tissue_levels <- c("FCX", "LMC", "MMC", "UMC", "CBL", "CSC", "LSC")
+
+combine$short <- factor(combine$short, levels = tissue_levels)
+
+
+combine_clean <- combine %>%
+  filter( gene_symbol %in% filter(gene_tally, n > 1)$gene_symbol)
+
+
+str_qtl_plot <- function(data){
+  data %>%
+  ggplot(aes(x = type, y = gene_symbol)) + 
+  geom_point(colour = "white") +
+  #geom_point(a)
+  geom_point(
+    #position = position_nudge(x = -0.25), 
+             data = filter(data, type == "eQTL"), 
+             size = 2,
+             aes(x = type, y = gene_symbol, colour = type, shape = type) ) + 
+  geom_point(
+    #position = position_nudge(x = 0.25), 
+             data = filter(data, type == "sQTL"), 
+             size = 2,
+             aes(x = type, y = gene_symbol, colour = type, shape = type) ) + 
+  facet_grid(variant_id~short, scales = "free", space = "free", margins = FALSE) +
+  theme_bw() +
+   scale_colour_manual(values = c("blue3", "orangered2")) +
+  theme(strip.text.y.right = element_text(angle = 0), panel.grid = element_blank(),
+        strip.background = element_blank(), 
+         panel.spacing=unit(0, "lines"), 
+        axis.text.y = element_text(face = "italic"), 
+        axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank() )  +
+  labs(x = "", y = "") +
+    theme(legend.position = "bottom")
+}
+
+full_plot <- str_qtl_plot(combine)
+clean_plot <- str_qtl_plot(combine_clean)
+
+clean_plot
+full_plot
+
+ggsave(plot = clean_plot, filename = "data/STR/str_qtl_plot_clean.pdf", width =4.5, height = 3.5)
+ggsave(plot = full_plot, filename = "data/STR/str_qtl_plot_full.pdf", width =4.5, height =7)
+
+
+```
+
+Write out supp table
+
+```{r}
+combine_all <- bind_rows(
+  eq %>% mutate(type = "eQTL"),
+  sp %>% mutate(type = "sQTL")
+) %>%
+  #mutate(Tissue = gsub("Motor_Cortex_BA4unspecified", "Other\nMotor\nCortex", Tissue)) %>%
+  #mutate(Tissue = gsub("_", "\n", Tissue)) %>%
+  filter(!Tissue %in% c("Hippocampus", "Temporal_Cortex")) %>%
+  filter(!short %in% c("OCX", "TSC")) %>%
+  mutate(phenotype_id = gsub("\\.[0-9]+", "", phenotype_id))
+
+View(combine_all)
+
+combine_out <- select(combine_all, tissue = label, label = short, qtl_type = type, STR = variant_id, QTL_gene = gene_symbol, QTL_feature = phenotype_id, num_var, beta_shape1, beta_shape2, true_df, pval_true_df, variant_id, start_distance, end_distance, ma_samples, ma_count, af, pval_nominal, slope, slope_se, pval_perm, pval_beta, qval   ) %>%
+  mutate(tissue = gsub(" ", "_", tissue))
+
+table(combine_out$tissue)
+
+write_tsv(combine_out, "data/STR/all_str_qtls_out.tsv")
+
+View(combine_out)
+```
+

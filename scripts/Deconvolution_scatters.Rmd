@@ -1,0 +1,232 @@
+---
+title: "Deconvolution Exploration"
+output: html_document
+date: "2025-03-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+```{r}
+meta <- read_csv("data/deconvolution/metadata_als.csv") %>% janitor::clean_names()
+
+meta <- mutate(meta, disease = case_when(
+  subject_group == "ALS Spectrum MND" ~ "ALS",
+  subject_group == "Non-Neurological Control" ~ "Control"
+)) %>%
+  mutate(disease = factor(disease, levels = c("Control", "ALS")))
+
+meta$duration <- as.numeric(meta$disease_duration_in_months) / 12
+
+cbl_old <- read_csv("data/deconvolution/music_props_vs_cereb_gse246183.csv") #%>% janitor::clean_names()
+# updated version - old version was run with normalized counts
+cbl <- read_csv("data/deconvolution/music_props_vs_cereb_gse246183_updated.csv")
+
+sc_raw <- read_csv("data/deconvolution/music_props_vs_spinal_cord_gse190442.csv")
+cx <- read_csv("data/deconvolution/music_props_vs_mathys_cogdx.csv")
+
+names(meta)[1] <- "sample"
+names(cbl)[1] <- "sample"
+names(cbl_old)[1] <- "sample"
+names(sc_raw)[1] <- "sample"
+names(cx)[1] <- "sample"
+
+cbl <- left_join(cbl, meta, by = "sample")
+cbl_old <- left_join(cbl_old, meta, by = "sample")
+sc <- left_join(sc_raw, meta, by = "sample")
+cx <- left_join(cx, meta, by = "sample")
+
+
+
+prop_plot <- function(data, var, cell_type, labs, ylims = c(0,1), facet =TRUE, mytitle = ""){
+  p <- data%>%
+  filter(!is.na(disease) ) %>%
+  ggplot(aes_string(x = var, y = cell_type)) + 
+    geom_point(colour = "black") + 
+    geom_point(aes(colour = disease), size = 0.5) +
+  geom_smooth(method = "lm", aes(group = disease),colour = "black") +
+  ggpubr::stat_cor(colour = "black") +
+  theme_classic() +
+  scale_colour_manual(values = c("ALS" = "firebrick3", "Control" = "dodgerblue2" )) +
+  labs(x = labs[1], y = labs[2], title = mytitle) +
+  scale_y_continuous(labels = scales::percent_format(), limits = ylims ) +
+  guides(colour = "none") +
+  theme(strip.background = element_blank(), strip.text = element_text(size = 12) )
+  
+  if(facet){
+    p <- p +facet_wrap(~disease)
+  }
+  return(p)
+}
+#library(patchwork)
+```
+
+Make plots for figures
+
+Case-Control
+
+```{r}
+prop_plot(sc, var = "disease", cell_type = "Lymphocytes", labs = c("Disease", "% Lymphocytes"), facet = FALSE)
+
+sc <- mutate(sc, tissue = case_when(
+  sample_source == "Spinal_Cord_Cervical" ~ "CSC",
+  sample_source == "Spinal_Cord_Lumbar" ~ "LSC"
+))
+
+p1 <- sc %>%
+  filter(!is.na(disease)) %>%
+  filter(sample_source != "Spinal_Cord_Thoracic") %>%
+  ggplot(aes(x = disease, y = Lymphocytes)) + 
+  geom_boxplot(outliers = FALSE) + 
+  facet_wrap(~tissue, nrow = 2) + 
+  geom_jitter(width = 0.25, height = 0, aes(colour = disease), size = 0.5) +  
+  scale_colour_manual(values = c("ALS" = "firebrick3", "Control" = "dodgerblue2" )) +
+  guides(colour = "none") +
+  labs(x = "", y = "% Lymphocytes") +
+  theme_classic() +
+  scale_y_continuous(labels = scales::percent_format() ) +
+  guides(colour = "none") +
+  theme(strip.background = element_blank(), strip.text = element_text(size = 12), axis.text = element_text(colour = "black") )
+
+p1
+ggsave(plot = p1, filename = "data/deconvolution/SC_Lymphocytes.pdf", dpi = 600, height = 5, width =3 )
+
+```
+
+# Compare old vs new CBL
+
+```{r}
+library(patchwork)
+prop_plot(cbl, var = "age_at_death", cell_type = "PC", labs = c("Age at death, years", "% Purkinje cell"), mytitle = "New") +
+prop_plot(cbl_old, var = "age_at_death", cell_type = "PC", labs = c("Age at death, years", "% Purkinje cell"), mytitle = "Old")
+
+prop_plot(cbl, var = "age_at_death", cell_type = "PER", labs = c("Age at death, years", "% Pericyte"), mytitle = "New") +
+prop_plot(cbl_old, var = "age_at_death", cell_type = "PER", labs = c("Age at death, years", "% Pericyte"), mytitle = "Old")
+
+
+prop_plot(sc %>% filter(tissue == "CSC"), var = "age_at_death", cell_type = "Oligodendrocytes", labs = c("Age at death, years", "% Oligodendrocytes") ) +
+
+prop_plot(sc %>% filter(tissue == "CSC"), var = "age_at_death", cell_type = "Astrcytes", labs = c("Age at death, years", "% Astrocytes") ) +
+  plot_layout(nrow = 2)
+
+prop_plot(sc %>% filter(tissue == "CSC"), var = "age_at_symptom_onset", cell_type = "Oligodendrocytes", labs = c("Age at onset, years", "% Oligodendrocytes") ) +
+
+prop_plot(sc %>% filter(tissue == "CSC"), var = "age_at_symptom_onset", cell_type = "Astrcytes", labs = c("Age at onset, years", "% Astrocytes") ) +
+  plot_layout(nrow = 2)
+
+
+```
+
+
+
+Clinical Variables
+
+```{r}
+p1 <- prop_plot(cbl, var = "age_at_death", cell_type = "PC", labs = c("Age at death, years", "% Purkinje cell"))
+
+p2 <- prop_plot(cbl, var = "age_at_death", cell_type = "GC", labs = c("Age at death, years", "% Granule cell"))
+
+ggsave(plot = p1, filename = "data/deconvolution/CBL_Purkinje_age_plot.png", dpi = 600, height = 2.5, width = 4)
+
+ggsave(plot = p1, filename = "data/deconvolution/CBL_Purkinje_age_plot.pdf", height = 2.5, width = 4)
+
+
+ggsave(plot = p2, filename = "data/deconvolution/CBL_Granule_age_plot.png", dpi = 600, height = 2.5, width = 4)
+
+
+p3 <- filter(sc,sample_source == "Spinal_Cord_Cervical") %>%
+prop_plot(var = "age_at_death", cell_type = "Oligodendrocytes", labs = c("Age at death, years", "% Oligodendrocytes"))
+
+p4 <- filter(sc,sample_source == "Spinal_Cord_Cervical") %>%
+prop_plot(var = "age_at_death", cell_type = "Astrcytes", labs = c("Age at death, years", "% Astrocytes"), ylims = c(0,0.5))
+
+## disease duration
+
+p5 <- filter(sc,sample_source == "Spinal_Cord_Cervical") %>%
+prop_plot(var = "age_at_death", cell_type = "Microglia", labs = c("Age at death, years", "% Microglia"), ylims = c(0,0.5))
+
+p6 <- filter(sc,sample_source == "Spinal_Cord_Cervical") %>%
+prop_plot(var = "duration", cell_type = "Microglia", labs = c("Disease duration, years", "% Microglia"), ylims = c(0,0.4), facet = FALSE)
+
+
+ggsave(plot = p3, filename = "data/deconvolution/SC_Oligo_age_plot.png", dpi = 600, height = 2.5, width = 4)
+ggsave(plot = p3, filename = "data/deconvolution/SC_Oligo_age_plot.pdf", height = 2.5, width = 4)
+
+ggsave(plot = p4, filename = "data/deconvolution/SC_Astro_age_plot.png", dpi = 600, height = 2.5, width = 4)
+
+ggsave(plot = p5, filename = "data/deconvolution/SC_Micro_age_plot.png", dpi = 600, height = 2.5, width = 5)
+
+ggsave(plot = p6, filename = "data/deconvolution/SC_Micro_dur_plot.png", dpi = 600, height = 2.5, width = 5)
+
+ggsave(plot = p6, filename = "data/deconvolution/SC_Micro_dur_plot.pdf", height = 2.5, width = 4)
+
+
+```
+
+## MAP4K4 splicing
+
+```{r}
+diffsplice <- readxl::read_excel("data/splicing/als_diffsplice_supp_tables_v3.xlsx", sheet = 2)
+
+mapk_junc <- filter(diffsplice, tsg_gene_name == "MAP4K4")
+
+mapk_junc %>%
+  group_by(clu, tissue) %>%
+  slice_min(clu_p.adjust, n = 1, with_ties = FALSE) %>%
+  #select(clu, tissue) %>%
+  ggplot(aes(x = tissue, y = clu, label = clu_p.adjust)) + geom_tile() + geom_label()
+
+
+mapk <- read.table("data/splicing/map4k4_psi.tsv", header=TRUE)
+
+mapk <- as_tibble(rownames_to_column(mapk, "junction"))
+
+mapk$cluster <- str_split_fixed(mapk$junction, ":", 4)[,4]
+
+filter(mapk, junction == "chr2:101859864:101864930:clu_45901_+") %>%
+  pivot_longer(names_to = "sample", values_to = "psi", cols = !c(junction, cluster)) %>%
+  mutate(sample = gsub("\\.", "-", sample)) %>%
+  left_join(meta, by = "sample") %>%
+  ggplot(aes(x = disease, y = psi)) + geom_boxplot() + facet_wrap(~sample_source)
+
+filter(mapk, junction == "chr2:101859864:101864930:clu_45901_+") %>%
+  pivot_longer(names_to = "sample", values_to = "psi", cols = !c(junction, cluster)) %>%
+  mutate(sample = gsub("\\.", "-", sample)) %>%
+  inner_join(sc_raw, by = "sample") %>%
+  select(-junction, -cluster) %>%
+  pivot_longer(cols = !c(sample, psi)) %>%
+  split(.$name) %>%
+  map_df( ~{ broom::tidy(cor.test(.x$value, .x$psi))}, .id = "cell")
+
+mapk_to_plot <- 
+filter(mapk, junction == "chr2:101859864:101864930:clu_45901_+") %>%
+  pivot_longer(names_to = "sample", values_to = "psi", cols = !c(junction, cluster)) %>%
+  mutate(sample = gsub("\\.", "-", sample)) %>%
+  inner_join(sc, by = "sample") %>%
+  filter(sample_source == "Spinal_Cord_Cervical")
+
+broom::tidy(cor.test(mapk_to_plot$psi, mapk_to_plot$Oligodendrocytes, method = "spearman"))
+
+
+mapk_to_plot %>%
+  # select(-sample, -junction, -cluster) %>%
+  # cor() %>%
+  # pheatmap::pheatmap()
+  ggplot(aes(x = Oligodendrocytes, y = psi)) + 
+  geom_point(colour = "black") +
+  geom_point(aes(colour = disease), size = 0.8) +
+  labs(y = "MAP4K4 junction PSI", x = "% Oligodendrocytes") +
+  ggpubr::stat_cor(method = "spearman") +
+  theme_classic() +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::percent) +
+  theme(axis.text = element_text(colour = "black"), axis.ticks = element_line(colour = "black"))
+
+mapk_plot
+ggsave(plot = mapk_plot, filename = "data/splicing/map4k4_oligo_plot.pdf", width = 3.4, height = 3)
+
+```
+
+Junction only really strong in spinal cord

@@ -1,0 +1,390 @@
+---
+title: "QTL numbers"
+author: "Jack Humphrey"
+date: "2024-10-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+```
+
+October 2024 
+
+Tensor QTL-mapped per-tissue eQTLs and sQTLs
+
+mapped by Kailash and Aline
+
+```{r}
+
+qtl_meta <- readxl::read_excel("../GWAS/GWAS-QTL_data_dictionary.xlsx", sheet = 3)
+tissue_labels <- readxl::read_excel("data/QTL/tissue_labels.xlsx")
+## eQTLs
+eqtl_meta <- filter(qtl_meta, grepl("NYGC", dataset), Contact %in% c("kailash"))
+eqtl_meta$tissue <- gsub("NYGC_|_EUR_eQTL_expression", "", basename(eqtl_meta$dataset) )
+
+eqtls <- list.files("data/QTL/tensorQTL/", pattern = "expression.cis_qtl.txt.gz", recursive = TRUE, full.names = TRUE)
+
+eqtl_res <- map(eqtls, read_tsv)
+names(eqtl_res) <- gsub("NYGC_|_EUR_eQTL_expression.cis_qtl.txt.gz", "", basename(eqtls) )
+
+eqtl_table <- map_df(eqtl_res, ~{
+  data.frame(n_gene = nrow(.x), n_gene_sig = sum(.x$qval < 0.05))
+}, .id = "tissue")
+
+eqtl_table$N <- eqtl_meta$N[match(eqtl_table$tissue, eqtl_meta$tissue)]
+eqtl_table$discovery <- eqtl_table$n_gene_sig / eqtl_table$n_gene
+eqtl_table$type <- "eQTL"
+
+eqtl_table
+```
+
+sQTLs
+
+```{r}
+sqtl_genes <- read_tsv("data/QTL/tensorQTL/Gene_junctions_annotation_v46_NYGC.txt.gz")
+
+sqtl_meta <- filter(qtl_meta, grepl("NYGC", dataset), Contact %in% c("Aline"))
+sqtl_meta$tissue <- gsub("NYGC_|.cis_qtl.txt.gz", "", basename(sqtl_meta$top_path) )
+
+sqtls <- list.files("data/QTL/tensorQTL/", pattern = ".cis_qtl.txt.gz", recursive = TRUE, full.names = TRUE)
+sqtls <- sqtls[ !grepl("expression", sqtls)]
+
+sqtl_res <- map(sqtls, ~{
+  d <- read_tsv(.x)
+  d <-  left_join(d, sqtl_genes, by = c("phenotype_id" = "feature") )
+  return(d)
+}
+)
+
+names(sqtl_res) <- gsub("NYGC_|.cis_qtl.txt.gz", "", basename(sqtls) )
+
+sqtl_table <- map_df(sqtl_res, ~{
+  gene_df <- group_by(.x, gene_id) %>% summarise(qval = min(qval))
+  data.frame(n_feature = nrow(.x), n_feature_sig = sum(.x$qval < 0.05), n_gene = nrow(gene_df), n_gene_sig = sum(gene_df$qval < 0.05))
+}, .id = "tissue")
+
+sqtl_table$N <- sqtl_meta$N[match(sqtl_table$tissue, sqtl_meta$tissue)]
+
+
+sqtl_table$discovery <- sqtl_table$n_gene_sig / sqtl_table$n_gene
+sqtl_table$type <- "sQTL"
+
+sqtl_table
+
+```
+
+All QTLs together
+```{r}
+all_qtl <- bind_rows(eqtl_table, sqtl_table) %>%
+  left_join(tissue_labels) %>%
+  mutate(label = gsub(" ", "\n", label))
+
+
+all_qtl %>%
+  ggplot(aes(x = N, y = n_gene_sig)) + 
+  geom_line(aes(group = label), linetype = 3) +
+  geom_text_repel(data = filter(all_qtl, type == "eQTL" & N > 100), aes(label = label), nudge_y = 1000) +
+  geom_point(aes(shape = type, colour = type), size = 3) +
+  theme_classic(base_size = 15) +
+  labs(x = "Sample size", y = "N eGenes at qval < 0.05") +
+  ylim(0,13000)
+
+
+
+write_csv(all_qtl, "data/QTL/tensorQTL/all_qtl_results.csv")
+
+tensor_res <- read_csv("data/QTL/tensorQTL/all_qtl_results.csv")
+# add in tissues by hand
+# all_qtl_clean <- read_tsv("data/QTL/tensorQTL/all_qtl_results_labelled.tsv")
+
+all_qtl %>%
+  ggplot(aes(x = N, y = discovery)) + geom_point(aes(colour = type)) + geom_text_repel(aes(label = label))
+
+```
+
+
+June 2025
+
+mmQTL-mapped eQTLs and sQTLs
+
+eQTLs
+
+```{r}
+qtl_meta <- readxl::read_excel("../GWAS/GWAS-QTL_data_dictionary.xlsx", sheet = 3)
+tissue_labels <- readxl::read_excel("data/QTL/tissue_labels.xlsx")
+
+## eQTLs
+eqtl_meta <- filter(qtl_meta, grepl("mmQTL_NYGC", dataset), Contact %in% c("Kailash"))
+
+eqtl_meta$tissue <- gsub("mmQTL_NYGC_|_ALL_eQTL", "", basename(eqtl_meta$dataset) )
+
+eqtls <- list.files("data/QTL/mmQTL/", pattern = "_peak_1_top_assoc.tsv.gz", recursive = TRUE, full.names = TRUE)
+
+eqtl_res <- map(eqtls, read_tsv)
+names(eqtl_res) <- gsub("NYGC_|_peak_1_top_assoc.tsv.gz", "", basename(eqtls) )
+
+eqtl_table <- map_df(eqtl_res, ~{
+  data.frame(n_gene = nrow(.x), n_gene_sig = sum(.x$Random_Bonf_FDR < 0.05))
+}, .id = "tissue")
+
+eqtl_table$N <- eqtl_meta$N[match(eqtl_table$tissue, eqtl_meta$tissue)]
+eqtl_table$discovery <- eqtl_table$n_gene_sig / eqtl_table$n_gene
+eqtl_table$type <- "eQTL"
+
+eqtl_table
+```
+
+eQTL discovery rate seems much lower in mmQTL compared to tensorQTL - weird.
+
+sQTLs - ALL
+
+```{r}
+sqtl_genes <- read_tsv("data/QTL/mmQTL/Gene_junctions_annotation_v46_NYGC.txt")
+
+sqtl_meta <- filter(qtl_meta, grepl("mmQTL_NYGC.*ALL_sQTL", dataset), Contact %in% c("Aline"))
+sqtl_meta$tissue <- gsub("mmQTL_NYGC_|_ALL_sQTL", "", sqtl_meta$dataset )
+
+sqtls <- list.files("data/QTL/mmQTL/", pattern = "_sQTL_top_assoc.tsv.gz", recursive = TRUE, full.names = TRUE)
+#sqtls <- sqtls[ !grepl("expression", sqtls)]
+
+sqtl_res <- map(sqtls, ~{
+  d <- read_tsv(.x)
+  d <-  left_join(d, sqtl_genes, by = c("feature") )
+  d$Random_Bonf_FDR <- p.adjust(d$Random_bonf, method = "fdr")
+  return(d)
+}
+)
+
+names(sqtl_res) <- gsub("NYGC_|_sQTL_top_assoc.tsv.gz", "", basename(sqtls) )
+
+sqtl_table <- map_df(sqtl_res, ~{
+  gene_df <- group_by(.x, gene_id) %>% slice_min(Random_Bonf_FDR, n = 1, with_ties = FALSE)
+  data.frame(n_feature = nrow(.x), n_feature_sig = sum(.x$Random_Bonf_FDR < 0.05), n_gene = nrow(gene_df), n_gene_sig = sum(gene_df$Random_Bonf_FDR < 0.05))
+}, .id = "tissue")
+
+sqtl_table$N <- sqtl_meta$N[match(sqtl_table$tissue, sqtl_meta$tissue)]
+
+
+sqtl_table$discovery <- sqtl_table$n_gene_sig / sqtl_table$n_gene
+sqtl_table$type <- "sQTL"
+
+sqtl_table
+
+
+```
+
+sQTLs - EUR
+
+```{r}
+sqtl_meta <- filter(qtl_meta, grepl("mmQTL_NYGC.*EUR_sQTL", dataset), Contact %in% c("Aline"))
+sqtl_meta$tissue <- gsub("mmQTL_NYGC_|_EUR_sQTL", "", sqtl_meta$dataset )
+
+sqtls <- list.files("data/QTL/mmQTL/", pattern = "_sQTL_EUR_top_assoc.tsv.gz", recursive = TRUE, full.names = TRUE)
+#sqtls <- sqtls[ !grepl("expression", sqtls)]
+
+sqtl_res <- map(sqtls, ~{
+  d <- read_tsv(.x)
+  d <-  left_join(d, sqtl_genes, by = c("feature") )
+  d$Random_Bonf_FDR <- p.adjust(d$Random_bonf, method = "fdr")
+  return(d)
+}
+)
+
+names(sqtl_res) <- gsub("NYGC_|_sQTL_EUR_top_assoc.tsv.gz", "", basename(sqtls) )
+
+sqtl_table <- map_df(sqtl_res, ~{
+  gene_df <- group_by(.x, gene_id) %>% slice_min(Random_Bonf_FDR, n = 1, with_ties = FALSE)
+  data.frame(n_feature = nrow(.x), n_feature_sig = sum(.x$Random_Bonf_FDR < 0.05), n_gene = nrow(gene_df), n_gene_sig = sum(gene_df$Random_Bonf_FDR < 0.05))
+}, .id = "tissue")
+
+sqtl_table$N <- sqtl_meta$N[match(sqtl_table$tissue, sqtl_meta$tissue)]
+
+
+sqtl_table$discovery <- sqtl_table$n_gene_sig / sqtl_table$n_gene
+sqtl_table$type <- "sQTL"
+
+sqtl_table_eur <- sqtl_table
+#
+# compare ALL to EUR
+
+bind_rows(
+  sqtl_table_eur %>% mutate(set = "EUR"),
+mmqtl_res %>% filter(type == "sQTL") %>% mutate(set = "ALL")
+) %>%
+  ggplot(aes(x = N, y = n_gene_sig)) + 
+  geom_line(aes(group = tissue), linetype = 3) +
+  #geom_text_repel(data = filter(mmqtl_res, type == "sQTL" & N > 100), aes(label = label), nudge_y = 1000) +
+  geom_point(aes(shape = type, colour = set), size = 3) +
+  theme_classic(base_size = 15) +
+  labs(x = "Sample size", y = "N eGenes at qval < 0.05") +
+  ylim(0,13000) +
+  facet_wrap(~tissue)
+
+
+
+
+```
+
+
+
+
+```{R}
+mmqtl_res <- bind_rows(eqtl_table, sqtl_table)
+write_csv(mmqtl_res,  "data/QTL/mmQTL/all_mmQTL_results.csv")
+
+write_tsv(data.frame(tissue = unique(mmqtl_res$tissue) ), file = "data/QTL/mmQTL/tissues.txt" )
+
+mmqtl_labels <- read_csv("data/QTL/mmQTL/tissue_labels.csv")
+
+mmqtl_res$label <- mmqtl_labels$label[match(mmqtl_res$tissue, mmqtl_labels$tissue)]
+
+mmqtl_res$label <- gsub("_", "\n", mmqtl_res$label)
+```
+
+```{r}
+#write_csv(all_qtl, "data/QTL/tensorQTL/all_qtl_results.csv")
+
+tensor_res <- read_csv("data/QTL/tensorQTL/all_qtl_results.csv")
+
+tensor_res
+
+library(patchwork)
+
+tensor_res %>%
+  ggplot(aes(x = N, y = n_gene_sig)) + 
+  geom_line(aes(group = label), linetype = 3) +
+  geom_text_repel(data = filter(all_qtl, type == "eQTL" & N > 100), aes(label = label), nudge_y = 1000) +
+  geom_point(aes(shape = type, colour = type), size = 3) +
+  theme_classic(base_size = 15) +
+  labs(x = "Sample size", y = "N eGenes at qval < 0.05", title = "tensorQTL - Oct 2024") +
+  ylim(0,13000)
+
+mmqtl_res %>%
+  ggplot(aes(x = N, y = n_gene_sig)) + 
+  geom_line(aes(group = label), linetype = 3) +
+  geom_text_repel(data = filter(mmqtl_res, type == "sQTL" & N > 100), aes(label = label), nudge_y = 1000) +
+  geom_point(aes(shape = type, colour = type), size = 3) +
+  theme_classic(base_size = 15) +
+  labs(x = "Sample size", y = "N eGenes at qval < 0.05", title = "mmQTL - June 2025") +
+  ylim(0,13000)
+
+bind_rows(
+  tensor_res %>% mutate(tool = "tensorQTL"),
+  mmqtl_res %>% mutate(tool = "mmQTL")
+) %>%
+  ggplot(aes(x = N, y = n_gene_sig)) + 
+  geom_line(aes(group = label), linetype = 3) +
+  #geom_text_repel(data = filter(mmqtl_res, type == "sQTL" & N > 100), aes(label = label), nudge_y = 1000) +
+  geom_point(aes(shape = type, colour = tool), size = 3) +
+  theme_classic(base_size = 15) +
+  labs(x = "Sample size", y = "N eGenes at qval < 0.05") +
+  ylim(0,13000) +
+  facet_wrap(~type)
+
+
+```
+
+
+mmQTL meta-analysis
+
+```{r}
+mmqtl_all <- read_tsv("data/QTL/mmQTL/meta/nygc_ALL_eQTL_peak_1_top_assoc.tsv.gz")
+mmqtl_eur <- read_tsv("data/QTL/mmQTL/meta/nygc_EUR_eQTL_peak_1_top_assoc.tsv.gz")
+
+dim(mmqtl_all)
+dim(mmqtl_eur)
+
+names(mmqtl_all)
+table(mmqtl_all$Random_Bonf_FDR < 0.05)
+table(mmqtl_eur$Random_Bonf_FDR < 0.05)
+
+x <- mmqtl_all$variant_id
+
+x[!grepl("^rs",x)]
+
+mmqtl_all <- mmqtl_all %>%
+  mutate(var_type = case_when(
+    grepl("^rs", variant_id) & nchar(ref) == 1 & nchar(alt) == 1 ~ "SNV_SNP",
+    grepl("^rs", variant_id) & nchar(Allele) > 1 ~ "SNV_INS",
+    grepl("^rs", variant_id) & nchar(ref) > 1 & nchar(Allele) == 1 ~ "SNV_DEL",
+    grepl("^rs", variant_id) & (nchar(ref) > 1 | nchar(alt) > 1) ~ "INDEL",
+    grepl("INS", variant_id) ~ "SV_INS",
+    grepl("DEL", variant_id) ~ "SV_DEL",
+    TRUE ~ "other"
+  ))
+
+table(mmqtl_all$var_type)
+
+mmqtl_all %>%
+  mutate(chr = as.numeric(gsub("chr", "", chr))) %>%
+  filter(Random_Bonf_FDR < 0.05) %>%
+  ggplot(aes(x = var_type, y = fixed_z)) + 
+  geom_jitter(aes(colour = var_type), height = 0, width = 0.25 ) + 
+  geom_boxplot(outlier.colour = NA, fill = NA, colour = "black") +
+  theme_classic() +
+  #facet_grid(.~chr, scales = "free", space = "free") +
+  #theme(axis.text.x = element_blank(), strip.background = element_blank() ) +
+  scale_colour_viridis_d() +
+  geom_hline(yintercept = 0, linetype = 2)
+  
+
+sv_del <- select(mmqtl_all, var_type, feature, chr, pos, ref, alt, variant_id, fixed_beta, fixed_z) %>%
+  filter(var_type == "SV_DEL")
+
+
+sv_del[1,]
+```
+
+Top deletion SV deletes 182kb region containing ENSG00000220804 (LINC01881) which is downregulated
+
+Cut out just SVs from meta-analysis full stats
+
+How often is the lead SV close to the lead SNP?
+
+```{r}
+mmqtl_sv <- read_tsv("data/QTL/mmQTL/meta/nygc_ALL_eQTL_SVs.tsv.gz")
+length(unique(mmqtl_sv$feature))
+
+mmqtl_sv_top <- mmqtl_sv %>% group_by(feature) %>% slice_min(Random_bonf, n = 1, with_ties = FALSE) %>%
+  mutate(Random_Bonf_FDR = p.adjust(Random_bonf, method = "fdr"))
+
+table(mmqtl_sv_top$Random_Bonf_FDR < 0.05)
+
+mmqtl_sv_top <- mmqtl_sv_top %>%
+    mutate(var_type = case_when(
+    grepl("INS", variant_id) ~ "SV_INS",
+    grepl("DEL", variant_id) ~ "SV_DEL",
+    TRUE ~ "other"
+  ))
+
+table(mmqtl_sv_top$var_type)
+
+mmqtl_sv_top %>%
+  filter(Random_Bonf_FDR < 0.05) %>%
+  ggplot(aes(x = var_type, y = fixed_z)) + geom_jitter(width = 0.25, height = 0) + geom_boxplot()
+
+compare_sv_snp <- inner_join(
+mmqtl_all %>%
+  select(feature,variant_id, fixed_z, Fixed_P, Random_Bonf_FDR),
+mmqtl_sv_top %>%
+  select(feature,variant_id, fixed_z, Fixed_P, Random_Bonf_FDR),
+by = "feature", suffix = c(".all", ".sv")
+) %>%
+  filter(Random_Bonf_FDR.sv < 0.05 ) %>%
+  mutate(class = case_when(
+    #variant_id.all == variant_id.sv ~ "SV"
+    Fixed_P.all < Fixed_P.sv ~ "SNP stronger",
+    Fixed_P.sv <= Fixed_P.all  ~ "SV stronger",
+    TRUE ~ "other"
+  ))
+
+table(compare_sv_snp$class)
+
+compare_sv_snp %>%
+  ggplot(aes(x = abs(fixed_z.all), y = abs(fixed_z.sv) )) + geom_point(aes(colour = class))
+
+```
+
