@@ -6,8 +6,8 @@ Authors:
 - Ali Oku
 - Marta Byrska-Bishop
 - Anna O. Basile
-- Uday S. Evani2
-- André Corvelo2
+- Uday S. Evani
+- André Corvelo
 - Alex Tokolyi
 - Kailash BP
 - Aline Réal
