@@ -1,7 +1,6 @@
 # NYGC ALS Consortium Flagship Paper
 
 Authors: 
-
 - Jack Humphrey
 - Ali Oku
 - Marta Byrska-Bishop
@@ -14,6 +13,6 @@ Authors:
 - Yebin Kim
 - Marielle L. Bond
 
-All code files written for the paper
+All code files written for the paper.
 
 
