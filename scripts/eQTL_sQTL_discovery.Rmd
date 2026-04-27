@@ -1,0 +1,198 @@
+---
+title: "tensorQTL numbers"
+author: "Jack Humphrey"
+date: "2025-08-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+```
+
+
+```{r}
+qtl_meta <- readxl::read_excel("../GWAS/GWAS-QTL_data_dictionary.xlsx", sheet = 3)
+tissue_labels <- readxl::read_excel("data/QTL/tissue_labels.xlsx")
+## eQTLs
+eqtl_meta <- filter(qtl_meta, grepl("NYGC", dataset), Contact %in% c("kailash"))
+eqtl_meta$tissue <- gsub("NYGC_|_EUR_eQTL_expression", "", basename(eqtl_meta$dataset) )
+# fix typo
+eqtl_meta$tissue <- gsub("Cervival", "Cervical", eqtl_meta$tissue)
+
+eqtl_meta$label <- tissue_labels$short[match(eqtl_meta$tissue, tissue_labels$tissue)]
+
+eqtls <- list.files("data/QTL/tensorQTL/", pattern = "_gene.cis_qtl.txt.gz", recursive = TRUE, full.names = TRUE)
+
+eqtl_res <- map(eqtls, ~{ 
+  x <- read_tsv(.x)
+  x$qval <- qvalue::qvalue(x$pval_perm)$qvalues
+  return(x)
+  })
+
+names(eqtl_res) <- gsub("NYGC_|_expression_peer.*_gene.cis_qtl.txt.gz", "", basename(eqtls) )
+
+eqtl_table <- map_df(eqtl_res, ~{
+ #.x$qval <- qvalue::qvalue(.x$pval_perm)$qvalues
+  data.frame(n_gene = nrow(.x), n_gene_sig = sum(.x$qval < 0.05))
+}, .id = "tissue")
+
+eqtl_table$label <- tissue_labels$short[match(eqtl_table$tissue, tissue_labels$tissue)]
+eqtl_table$N <- eqtl_meta$N[match(eqtl_table$label, eqtl_meta$label)]
+eqtl_table$discovery <- eqtl_table$n_gene_sig / eqtl_table$n_gene
+eqtl_table$type <- "eQTL"
+
+eqtl_table
+```
+
+sQTLs
+
+```{r}
+sqtl_genes <- read_tsv("data/QTL/tensorQTL/Gene_junctions_annotation_v46_NYGC.txt.gz")
+
+sqtl_meta <- filter(qtl_meta, grepl("tensorQTL_NYGC", dataset), Contact %in% c("Aline"))
+sqtl_meta$tissue <- gsub("NYGC_|_EUR_sQTL.cis_qtl.txt.gz", "", basename(sqtl_meta$top_path) )
+
+sqtls <- list.files("data/QTL/tensorQTL/", pattern = "_EUR_sQTL.cis_qtl.txt.gz", recursive = TRUE, full.names = TRUE)
+sqtls <- sqtls[ !grepl("expression", sqtls)]
+
+sqtl_res <- map(sqtls, ~{
+  d <- read_tsv(.x)
+  d <-  left_join(d, sqtl_genes, by = c("phenotype_id" = "feature") )
+  return(d)
+}
+)
+names(sqtl_res) <- sqtls
+
+names(sqtl_res) <- gsub("NYGC_|_EUR_sQTL.cis_qtl.txt.gz", "", basename(sqtls) )
+
+sqtl_table <- map_df(sqtl_res, ~{
+  gene_df <- group_by(.x, gene_id) %>% summarise(qval = min(qval))
+  data.frame(n_feature = nrow(.x), n_feature_sig = sum(.x$qval < 0.05), n_gene = nrow(gene_df), n_gene_sig = sum(gene_df$qval < 0.05))
+}, .id = "tissue")
+
+sqtl_table$N <- sqtl_meta$N[match(sqtl_table$tissue, sqtl_meta$tissue)]
+
+
+sqtl_table$discovery <- sqtl_table$n_gene_sig / sqtl_table$n_gene
+sqtl_table$type <- "sQTL"
+
+sqtl_table$label <- tissue_labels$short[match(sqtl_table$tissue, tissue_labels$tissue)]
+
+
+
+```
+
+All QTLs together
+
+```{r}
+all_qtl <- bind_rows(eqtl_table, sqtl_table) #%>%
+ # left_join(tissue_labels) %>%
+  #mutate(label = gsub(" ", "\n", label))
+
+
+qtl_discovery <- all_qtl %>%
+  ggplot(aes(x = N, y = discovery)) + 
+  geom_line(aes(group = label), linetype = 3) +
+  geom_text_repel(data = filter(all_qtl, type == "eQTL" & N > 0), aes(label = label), nudge_y = 0.05) +
+  geom_point(aes(shape = type, colour = type), size = 3) +
+  theme_classic(base_size = 15) +
+  labs(x = "Sample size", y = "% genes at qval < 0.05") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_colour_manual(values = c("blue3", "orangered2")) +
+  theme(axis.text = element_text(colour = "black")) +
+  theme(legend.position = "bottom") +
+  xlim(25,400)
+  #+
+ # ylim(0,13000)
+qtl_discovery
+ggsave(plot = qtl_discovery, filename = "data/QTL/qtl_discovery_plot.pdf", width = 4.5, height = 5)
+
+all_qtl <- mutate(all_qtl, tissue = tissue_labels$label[match(all_qtl$label, tissue_labels$short)]) %>%
+  mutate(tissue = gsub(" ", "_", tissue)) %>%
+  rename(n_donors = N, n_junction = n_feature, n_junction_sig = n_feature_sig)
+  
+all_qtl
+
+write_csv(all_qtl, "data/QTL/tensorQTL/all_qtl_results.csv")
+
+tensor_res <- read_csv("data/QTL/tensorQTL/all_qtl_results.csv")
+# add in tissues by hand
+# all_qtl_clean <- read_tsv("data/QTL/tensorQTL/all_qtl_results_labelled.tsv")
+all_qtl
+```
+
+Explore SVs vs SNVs
+
+```{r}
+eqtl_res <- map(eqtl_res, ~{
+  .x %>%
+  mutate(var_type = case_when(
+    grepl("^rs", variant_id) ~ "SNV_SNP",
+    grepl("INS", variant_id) ~ "SV_INS",
+    grepl("DEL", variant_id) ~ "SV_DEL",
+    TRUE ~ "other"
+  ) )
+})
+
+map_df(eqtl_res, ~{ filter(.x, qval < 0.05) %>% group_by(var_type) %>% tally}, .id = "tissue")
+
+
+all_eqtl <- map_df(eqtl_res, ~{.x}, .id = "tissue")
+
+all_eqtl %>%
+  mutate(sig = qval < 0.05) %>%
+  left_join(tissue_labels, by = "tissue") %>%
+  ggplot(aes(x = (start_distance)) ) + geom_density(aes(group = tissue, colour = tissue)) + facet_wrap(~sig) +
+  labs(x = "SNP distance to TSS")
+```
+
+
+```{r}
+sqtl_res <- map(sqtl_res, ~{
+  .x %>%
+  mutate(var_type = case_when(
+    grepl("^rs", variant_id) ~ "SNV_SNP",
+    grepl("INS", variant_id) ~ "SV_INS",
+    grepl("DEL", variant_id) ~ "SV_DEL",
+    TRUE ~ "other"
+  ) )
+})
+
+eqtl_types <- map_df(eqtl_res, ~{ filter(.x, qval < 0.05) %>% group_by(var_type) %>% tally}, .id = "tissue") %>%
+  filter(var_type != "other") 
+
+
+
+left_join(eqtl_types,
+  eqtl_types %>%
+  group_by(tissue) %>% summarise(total = sum(n))
+) %>%
+  mutate(prop = n / total) %>%
+  filter(var_type != "SNV_SNP") %>%
+  ggplot(aes(x = tissue, y = prop)) + geom_col(aes(fill = var_type))
+
+
+all_sqtl <- map_df(sqtl_res, ~{.x}, .id = "tissue")
+
+
+
+all_eqtl %>%
+  mutate(sig = qval < 0.05) %>%
+  left_join(tissue_labels, by = "tissue") %>%
+  ggplot(aes(x = (start_distance/1e6)) ) + geom_density(aes(colour = sig)) + facet_wrap(~short) +
+  labs(x = "SNP distance to TSS/Mb") +
+  theme_classic() +
+  labs(colour = "qvalue < 0.05", title = "eQTLs")
+
+all_sqtl %>%
+  mutate(sig = qval < 0.05) %>%
+  left_join(tissue_labels, by = "tissue") %>%
+  ggplot(aes(x = (tss_distance/1e6)) ) + geom_density(aes(colour = sig)) + facet_wrap(~short) +
+  labs(x = "SNP distance to TSS/Mb") +
+  theme_classic() +
+  labs(colour = "qvalue < 0.05", title = "sQTLs")
+
+```
+

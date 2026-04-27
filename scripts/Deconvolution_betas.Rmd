@@ -1,0 +1,74 @@
+---
+title: "deconvolution results"
+author: "Jack Humphrey"
+date: "2024-11-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(patchwork)
+```
+
+```{r}
+# spinal cord
+sc_beta <- read_csv("data/deconvolution/deconv_betas_gse190442.csv")
+sc_p <- read_csv("data/deconvolution/deconv_pvals_gse190442.csv")
+# cortex
+cx_beta <- read_csv("data/deconvolution/deconv_betas_mathys.csv")
+cx_p <- read_csv("data/deconvolution/deconv_pvals_mathys.csv")
+
+process_data <- function(data, markers = "spinal cord", type = "beta"){
+  names(data)[1] <- "cell_type"
+  data %>%
+    pivot_longer(names_to = "tissue", values_to = "value", cols = !c(cell_type)) %>%
+    mutate(set = markers, var = type) 
+}
+
+df <- bind_rows(
+  process_data(sc_p, "spinal cord", "p"),
+  process_data(sc_beta, "spinal cord", "beta"),
+  process_data(cx_p, "cortex", "p"),
+  process_data(cx_beta, "cortex", "beta")
+) %>%
+  pivot_wider(names_from = var, values_from = value)
+
+make_plot <- function(data){
+  data %>%
+  mutate(padj = p.adjust(p, method = "fdr")) %>%
+  mutate(padj_label = case_when(
+    padj < 0.0001 ~ "***",
+    padj < 0.001 ~ "**",
+    padj < 0.05 ~ "*",
+    TRUE ~ "."
+    )) %>%
+  ggplot(aes(y = cell_type, x = tissue, fill = beta)) + geom_tile(colour = "black", size = 0.5) +
+  scale_fill_distiller(type = "div", palette = "RdBu", limits = c(-0.2,0.2)) + 
+  scale_colour_manual(values = c(NA, "white")) +
+  #geom_text(aes(label = padj_label)) +
+  geom_text(aes(label = padj_label), nudge_y = 0, size = 5) +
+  scale_y_discrete(expand = c(0,0), limits = rev) +
+  #theme_jh() +
+  labs(x = "", y = "") +
+  scale_x_discrete(expand = c(0,0), position = "top") +
+  theme(axis.text = element_text(colour = "black"))
+}
+
+p1 <- df %>%
+  filter(set == "spinal cord") %>%
+  make_plot() 
+p2 <- df %>%
+  filter(set == "cortex", !tissue %in% c("TSC", "CSC", "LSC")) %>%
+  make_plot() 
+
+ggsave(plot = p1, filename = "data/deconvolution/spinal_cord_deconv_plot.png", width = 2.5, height = 3, dpi = 600)
+
+ggsave(plot = p2, filename = "data/deconvolution/cortex_deconv_plot.png", width = 3, height = 3, dpi = 600)
+
+p1 + p2 +
+plot_layout(ncol =2, widths = c(3,5), guides = "collect")
+
+
+```
+

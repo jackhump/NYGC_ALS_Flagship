@@ -1,0 +1,256 @@
+---
+title: "Packard Poster"
+author: "Jack Humphrey"
+date: "2024-03-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+#library(sf)
+#library(rnaturalearth)
+library(ggrepel)
+library(patchwork)
+```
+
+Latitude and longitude from all NYGC ALS Consortium member sites extracted from Google Gemini
+
+```{r}
+dna <- readxl::read_excel("Metadata/ALS Consortium WGS Metadata 022723.xlsx") %>%
+janitor::clean_names()
+
+all_sites <- data.frame(site = unique(dna$site_specimen_collected))
+
+all_sites <- all_sites %>%
+  mutate(site = gsub("via.*", "", str_trim(site) ))  %>%
+  mutate(site = gsub("/.*", "", site)) %>%
+  filter(!site %in% c("NeuroLINCS", "Washington University - St. Louis", "Penn State Milton S. Hershey Medical Center ", "Penn State Milton S. Hershey Medical Center" ) ) %>%
+  distinct() %>%
+  arrange(site)
+
+writeLines(all_sites$site, con = "Packard_Poster/all_contributing_sites.txt")
+
+
+site_info <- readxl::read_excel("Packard_Poster/Consortium Site and PI List.xlsx") %>% janitor::clean_names()
+site_coords <- readxl::read_excel("Packard_Poster/all_contributor_locations.xlsx") %>% janitor::clean_names()
+
+site_df <- 
+  site_coords %>%
+  rename(site = institute) %>%
+  mutate(lat = as.numeric( gsub("°.*", "", latitude) ),
+         long = as.numeric( gsub("°.*", "", longitude) )
+  ) %>%
+  select(site, city, country, lat, long) %>% 
+  distinct() %>%
+  mutate(country_fixed = case_when(
+    country == "USA" ~ "United States of America",
+    #city == "Edinburgh" ~ "Scotland",
+    #country == "UK" ~ "England",
+    TRUE ~ country
+  ))
+
+# map of world
+worldmap <- ne_countries(scale = 'medium', type = 'map_units',
+                         returnclass = 'sf')
+worldmap$name <- ifelse( worldmap$name %in% c("England", "Scotland", "Northern Ireland", "Wales"), "UK", worldmap$name)
+
+# crop to region containing contributing sites
+site_map <-
+  ggplot() + 
+  geom_sf(data = worldmap, aes(fill = name %in% site_df$country_fixed ), colour = "black") +
+    coord_sf(xlim = c(-125, 45), ylim = c(20, 70), expand = FALSE) +
+    geom_point(data = site_df, aes(y = lat, x = long), size = 1.5, colour = "black") +
+    geom_point(data = site_df, aes(y = lat, x = long), size = 1, colour = "red") +
+    theme_bw() +
+  labs(x= "", y= "" ) +
+  guides(fill = "none") +
+  scale_fill_manual(values = c("white", "lightgray")) +
+  theme(plot.background = element_rect(colour = "white"), axis.text = element_blank(), axis.ticks = element_blank(), panel.grid = element_blank() )
+
+site_map
+
+#ggsave(site_map, filename = "Packard_Poster/contributors_map.png", dpi = 600)
+ggsave(site_map, filename = "plots/contributors_map.pdf")
+
+
+```
+
+PCA and % ancestry plots
+
+```{r}
+dna_meta <- readxl::read_excel("Metadata/ALS Consortium WGS Metadata 022723.xlsx") %>% janitor::clean_names()
+ancestry_df <- read_csv("Packard_Poster/ancestry_CGND_4857Samples_labels.csv")
+pca_df <- read_csv("Packard_Poster/CGND_4857DNASamples.smartpca.PCs1-3.csv")
+
+samples_2025 <- read_tsv("data/DNA/CGND.samples.20241022.tsv")
+
+dim(samples_2025)
+table(samples_2025$SampleID %in% ancestry_df$sampleID)
+
+table(dna_meta$subject_group)
+#group_by(dna_meta, subject_group, subject_group_subcategory) %>% tally() %>% arrange(desc(n)) %>% View()
+
+## remove dropped samples
+ancestry_df <- filter(ancestry_df, sampleID %in% samples_2025$SampleID)
+table(pca_df$sample %in% samples_2025$SampleID)
+pca_df <- filter(pca_df, subpop != "CGND_4857DNASamples_AN3929_GRM_WGS_2023-08-23" | sample %in% samples_2025$SampleID)
+```
+
+Plot PCA
+
+```{r}
+
+
+pca_df <- pca_df %>% mutate(group = ifelse(grepl("CGND", subpop), "CGND", pop)) 
+
+
+table(ancestry_df$label)
+
+ancestry_df <- arrange(ancestry_df, EUR, AFR,EAS,AMR,SAS )
+
+sample_order <- ancestry_df$sampleID
+
+label_names <- data.frame(
+  label = c("EUR", "AFR", "EAS", "SAS", "AMR", "Admixed"),
+  label_name = c("European", "African", "East Asian", "South Asian", "Admixed American", "More than one\npopulation")
+)
+
+label_df <- group_by(ancestry_df, label) %>% tally() %>% arrange(desc(n))  %>%
+  left_join(label_names) %>%
+  mutate(n = prettyNum(n, big.mark = ",")) %>%
+  mutate(label_id = c(paste0(label_name, "\n(", n, ")")))
+
+label_order <- rev(label_df$label_id)
+group_order <- filter(label_df, label != "Admixed") %>% pull(label) %>% rev()
+
+group_label_order <- filter(label_df) %>% pull(label_name) %>% rev()
+
+
+## just colour points by predicted ancestry
+pca_label_df <- pca_df %>%
+  filter(group == "CGND") %>%
+  left_join(ancestry_df, by = c("sample" = "sampleID") ) %>%
+  mutate(label = ifelse(is.na(group), "Admixed", label)) %>%
+  mutate(group = factor(group, levels = group_order)) %>%
+  left_join(label_df, by = c("label") ) %>%
+  mutate(label_name = factor(label_name, levels = group_label_order))  %>%
+  mutate(label_id = factor(label_id, levels = label_order))
+
+pca_plot <- pca_label_df %>%
+  ggplot(aes(x = pca2, y = pca3, colour = label_id)) + 
+  geom_point(colour = "black") +
+  geom_point(size = 0.8) +
+  #geom_point(data = filter(pca_df, group == "CGND"), size = 0.6, shape = 3) + 
+  theme_classic(base_size = 10) + 
+  theme(axis.text = element_blank(), axis.ticks = element_blank() ) +
+  labs(x = "PC2", y = "PC3", colour = "Predicted ancestry") +
+  guides(colour = guide_legend(override.aes = list(size=5), reverse = TRUE)) +
+  scale_colour_viridis_d(direction = 1) #+
+  #theme(legend.position = "bottom")
+
+saveRDS(pca_label_df, "data/nygc_wgs_pca_data.RDS")
+#pca_plot3
+
+ggsave(plot = pca_plot, width = 5, height = 3, filename = "plots/pca_ancestry_plot.pdf")
+
+
+
+
+```
+
+## Gene expression PCA
+```{r}
+pca_df <- read_tsv("data/RNA/pca_all_samples.tsv.gz")
+
+pca_plot <- pca_df %>%
+  ggplot(aes(x = PC1, y = PC2)) + 
+  geom_point(colour = "black") +
+  geom_point(size = 0.8) +
+  #geom_point(data = filter(pca_df, group == "CGND"), size = 0.6, shape = 3) + 
+  theme_classic(base_size = 10) + 
+  theme(axis.text = element_blank(), axis.ticks = element_blank() ) +
+  labs(x = "PC1", y = "PC2", colour = "CNS region") +
+  guides(colour = guide_legend(override.aes = list(size=5), reverse = TRUE)) +
+  scale_colour_viridis_d(direction = 1) #+
+  #theme(legend.position = "bottom")
+pca_plot
+
+```
+
+
+
+## Old plots
+
+```{r}
+
+pca_plot <- pca_df %>%
+  filter(group != "CGND") %>%
+  mutate(group = factor(group, levels = group_order)) %>%
+  left_join(label_df, by = c("group" = "label") ) %>%
+  mutate(label_name = factor(label_name, levels = group_label_order)) %>%
+  ggplot(aes(x = pca1, y = pca2, colour = label_name)) + 
+  geom_point(size = 0.6) +
+  geom_point(data = filter(pca_df, group == "CGND"), colour = "black", size = 0.6, shape = 3) + 
+  theme_classic() + 
+  theme(axis.text = element_blank(), axis.ticks = element_blank() ) +
+  labs(x = "PC1", y = "PC2", colour = "") +
+  guides(colour = guide_legend(override.aes = list(size=5), reverse = TRUE)) +
+  scale_colour_viridis_d(direction = -1)
+
+pca_plot2 <- pca_df %>%
+  filter(group != "CGND") %>%
+  mutate(group = factor(group, levels = group_order)) %>%
+  left_join(label_df, by = c("group" = "label") ) %>%
+  mutate(label_name = factor(label_name, levels = group_label_order)) %>%
+  ggplot(aes(x = pca2, y = pca3, colour = label_name)) + 
+  geom_point(size = 0.6) +
+  geom_point(data = filter(pca_df, group == "CGND"), colour = "black", size = 0.6, shape = 3) + 
+  theme_classic() + 
+  theme(axis.text = element_blank(), axis.ticks = element_blank() ) +
+  labs(x = "PC2", y = "PC3", colour = "") +
+  guides(colour = guide_legend(override.aes = list(size=5), reverse = TRUE)) +
+  scale_colour_viridis_d(direction = -1)
+
+ancestry_plot <- 
+  ancestry_df %>%
+  pivot_longer(names_to = "group", values_to = "prop", cols = !c("sampleID", "label")) %>%
+  left_join(label_df) %>%
+  mutate(sample = factor(sampleID,  levels = sample_order)) %>%
+  mutate(label_id = factor(label_id, levels = label_order)) %>%
+  mutate(group = factor(group, levels = group_order)) %>%
+  #filter(label == "SAS") %>%
+  ggplot(aes(x = prop, y = sample)) + 
+  geom_col(aes(fill = group), width = 1 ) +
+  facet_grid(label_id ~ ., scales = "free_y") +
+  theme_classic() +
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(), 
+        strip.text.y = element_text(angle = 0),
+        strip.background = element_blank(),
+        axis.line.y = element_blank(),
+        axis.text = element_text(colour = "black")
+        ) +
+  labs(y = "", x = "% Ancestry") +
+  scale_x_continuous(expand = c(0,0), labels = scales::percent_format(accuracy = 1) ) +
+  guides(fill = "none") +
+  scale_fill_viridis_d(direction = -1)
+
+
+#ancestry_plot
+
+multi_plot <- pca_plot + 
+pca_plot2 + 
+ancestry_plot + 
+  plot_layout(nrow = 1, widths = c(0.5, 0.5, 0.25), guides = "collect") &
+  theme(legend.position = "bottom") 
+multi_plot
+
+
+
+ggsave(plot = multi_plot, width = 9, height = 4, filename = "Packard_Poster/pca_ancestry_plot.png", dpi = 600)
+ggsave(plot = multi_plot, width = 9, height = 4, filename = "Packard_Poster/pca_ancestry_plot.pdf")
+
+
+```
+

@@ -1,0 +1,218 @@
+---
+title: "Fix Metadata"
+output: html_document
+date: "2026-04-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+Create final WGS and RNA metadata for supp tables and Zenodo
+
+Add in updated C9 and ATXN2 EH calls to WGS metadata
+Remove all donor-level info from RNA table
+Double check that donor IDs are consistent between WGS and RNA, sex, etc
+
+
+
+```{r}
+wgs_current <- readxl::read_excel("../../Manuscripts/NYGC_Flagship/Tables/WGS_Metadata_Apr17_2026.xlsx") %>%
+  filter(!is.na(`CGND ID`))
+
+rna_current <- readxl::read_excel("../../Manuscripts/NYGC_Flagship/Tables/RNA_Metadata_Apr17_2026.xlsx")
+
+harms_wgs <- readxl::read_excel("Harms_WGS/WGS_Harms_annotation_cleaned.xlsx")
+
+dim(wgs_current)
+# 4748 donors
+dim(rna_current)
+# 2574
+```
+
+Fix C9 and ATXN2 calls in WGS
+
+Anna Basile has double checked and these should be the correct ones
+
+```{r}
+eh_c9 <- read_tsv("Basile_EH/C9ORF72_summary_table_across_all_projects_GTOnlyForMetaDataTable_nob38.txt") %>% janitor::clean_names()
+names(eh_c9)[1] <- "dna_id"
+names(eh_c9)[2] <- "c9orf72_genotype"
+
+eh_atxn2 <- read_tsv("Basile_EH/ATXN2_summary_table_across_all_projects_GTOnlyForMetaDataTable_nob38.txt") %>% janitor::clean_names()
+names(eh_atxn2)[1] <- "dna_id"
+names(eh_atxn2)[2] <- "atxn2_genotype"
+
+
+get_max <- function(data){
+  x <- str_split_fixed(data, "/", 2)
+  max <- pmax(as.numeric(x[,1]), as.numeric(x[,2]) )
+  return(max)
+}
+
+eh_c9$c9orf72_max_call <- get_max(eh_c9$c9orf72_genotype)
+eh_atxn2$atxn2_max_call <- get_max(eh_atxn2$atxn2_genotype)
+eh_all <- inner_join(eh_c9, eh_atxn2)
+
+```
+
+Harms and Basile match on C9 calls. Good. Added new calls
+
+Check RNA and WGS for concordance
+
+```{r}
+rna_current$ExternalSubjectId <- gsub("EC42-C9", "EC42", rna_current$ExternalSubjectId)
+
+rna_donors <- rna_current$ExternalSubjectId
+table(rna_donors %in% wgs_current$`Subject ID`)
+
+setdiff(rna_current$ExternalSubjectId, wgs_current$`Subject ID`)
+
+combine <- inner_join(rna_current, wgs_current, by = c("ExternalSubjectId" = "Subject ID") )
+
+overlaps <- intersect(names(rna_current), names(wgs_current))
+names(overlaps) <- overlaps
+
+chisq.test(table(combine$`Ethnicity.x`, combine$`Ethnicity.y`))
+
+identical(combine$`Ethnicity.x`, combine$`Ethnicity.y`)
+
+check_overlap <- map_df(overlaps, ~{
+  data.frame(
+    na_rna = sum(is.na(combine[[paste0(.x, ".x")]]) ),
+    na_wgs = sum(is.na(combine[[paste0(.x, ".y")]]) ),
+    equal = identical(combine[[paste0(.x, ".x")]], combine[[paste0(.x, ".y")]] ) )
+  #broom::tidy(chisq.test(table(combine[[paste0(.x, ".x")]], combine[[paste0(.x, ".y")]])))
+}, .id = "variable"
+)
+
+check_overlap
+
+```
+
+Seems that RNA metadata is not up to date with WGS metadata on some WGS-derived things, so I should remove those columns from RNA
+
+
+WGS metadata
+
+add C9 and ATXN2 calls
+harmonize names - rna_id, dna_id, donor_id
+convert with janitor to all lower case when possible
+
+```{r}
+wgs_final <- wgs_current %>%
+  janitor::clean_names() %>%
+  rename(dna_id = cgnd_id, donor_id = subject_id, dna_platform = platform, dna_library_prep = prep) %>%
+  left_join(eh_all, by = "dna_id") %>%
+  select(-c9_repeat_size, -expanded_30, -atxn2_repeat_size, -intermediate_30_33) %>%
+  select(-data_access_restriction, everything(), data_access_restriction) %>%
+  mutate(subject_group_subcategory = ifelse(subject_group_subcategory == "0.0", NA, subject_group_subcategory ))
+```
+
+
+RNA metadata
+
+harmonize names - rna_id, dna_id, donor_id
+convert with janitor to all lower case when possible
+remove redundant columns in RNA metadata
+
+harmonize tissue names and add tissue codes - maybe
+
+
+```{r}
+tissue_df <- readxl::read_excel("data/QTL/tissue_labels.xlsx")
+
+rna_tissues <- unique(rna_current$`Sample Source`)
+
+rna_current$`Sample Source` %in% tissue_df$region
+
+rna_final <- rna_current %>%
+  janitor::clean_names() %>%
+  rename(rna_id = internal_id, donor_id = external_subject_id, rna_platform = platform,
+         tissue = sample_source, rna_library_prep = prep)
+
+overlap_cols <- intersect(names(wgs_final), names(rna_final))
+overlap_cols <- overlap_cols[ overlap_cols != "donor_id"]
+
+# remove additional columns
+trim_cols <- c(
+  "reported_genomic_mutations_from_sites_not_in_any_way_associated_with_wgs_data_from_nygc",
+  "c9_repeat_size",
+  "expanded_30",
+  "atxn2_repeat_size",
+  "intermediate_30_33"
+)
+
+rna_final <- select(rna_final, -all_of(overlap_cols), -all_of(trim_cols) )
+
+```
+
+
+update harms table to match
+
+```{r}
+harms_final <- harms_wgs %>%
+  janitor::clean_names() %>%
+  rename(donor_id = external_subject_id, dna_id = external_sample_id) %>%
+  select(-subject_group, -subject_group_subcategory)
+
+harms_final$dna_id2 <- wgs_final$dna_id[match(harms_final$donor_id, wgs_final$donor_id)]
+
+table(is.na(harms_final$dna_id2))
+``` 
+
+
+final checks for interoperability
+
+```{r}
+table(rna_final$donor_id %in% wgs_final$donor_id)
+
+table(harms_final$dna_id %in% wgs_final$dna_id)
+
+
+table(harms_final$donor_id %in% wgs_final$donor_id)
+setdiff(harms_final$dna_id, wgs_final$dna_id)
+
+
+table(harms_final$donor_id %in% rna_final$donor_id)
+```
+
+
+
+check gene count matrix
+
+```{r}
+rna_counts <- read_csv("~/Downloads/count_data_NYGC_ALS_Consortium.csv.gz")
+
+length(unique(names(rna_counts)))
+table(names(rna_counts) %in% rna_current$`Internal ID`)
+
+setdiff(names(rna_counts), rna_current$`Internal ID`)
+```
+
+Count matrix completely overlaps, hooray.
+
+Write out
+
+```{r}
+# weird issue with WGS meta - clinical data has newline characters
+wgs_final_fix <- wgs_final %>%
+  mutate(across(where(is.character), ~ gsub("[\t\n\r]", " ", .x)))
+which(sapply(wgs_final_fix, function(col) any(grepl("\n", col, fixed = TRUE))))
+
+# stupid excel imports C9 and ATXN2 genotypes as dates
+wgs_final_fix$c9orf72_genotype <- paste0("EH-",wgs_final_fix$c9orf72_genotype)
+wgs_final_fix$atxn2_genotype <- paste0("EH-",wgs_final_fix$atxn2_genotype)
+
+
+write_tsv(wgs_final_fix, "Metadata/WGS_metadata_apr1726.tsv")
+write_tsv(rna_final, "Metadata/RNA_metadata_apr1726.tsv")
+write_tsv(harms_final, "Metadata/WGS_annotations_apr176.tsv")
+
+writeLines(names(wgs_final_fix), "Metadata/WGS_columns.txt" )
+writeLines(names(rna_final), "Metadata/WGS_columns.txt" )
+writeLines(names(harms_final), "Metadata/WGS_columns.txt" )
+
+```
+

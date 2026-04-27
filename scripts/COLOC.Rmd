@@ -1,0 +1,276 @@
+---
+title: "COLOC"
+author: "Jack Humphrey"
+date: "2025-08-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggrepel)
+rerun <- FALSE
+```
+
+```{r}
+coloc_full <- read_tsv("data/QTL/COLOC/old/all_COLOC_results_merged_H4_0_no_LD.tsv.gz")
+coloc_res <- read_tsv("data/QTL/COLOC/all_COLOC_results_merged_H4_0.5_with_LD.tsv.gz")
+tissue_labels <- readxl::read_excel("data/QTL/tissue_labels.xlsx")
+sqtl_genes <- read_tsv("data/QTL/tensorQTL/Gene_junctions_annotation_v46_NYGC.txt.gz")
+#gene_meta <- read_tsv("~/GENCODE/gencode.v30.tx2gene.tsv") %>% janitor::clean_names()
+gene_meta <- read_tsv("~/GENCODE/gencode.v30.tx2gene.tsv") %>% janitor::clean_names()
+names(gene_meta) <- c("transcript_id", "gene_id", "gene_name")
+gene_meta$gene_id <-  gsub("\\.[0-9]+", "", gene_meta$gene_id)
+sqtl_genes$gene_id <- gsub("\\.[0-9]+", "", sqtl_genes$gene_id)
+sqtl_genes$gene_name <- gene_meta$gene_name[match(sqtl_genes$gene_id, gene_meta$gene_id)]
+
+coloc_res <- mutate(coloc_res, 
+                    type = ifelse(grepl("ENSG", QTL_junction), "eQTL", "sQTL" ))
+coloc_res$feature <- gsub("\\.[0-9]+", "", coloc_res$feature)
+coloc_res$gene_name_e <- gene_meta$gene_name[match(coloc_res$feature, gene_meta$gene_id)]
+coloc_res$gene_name_s <- sqtl_genes$gene_name[match(coloc_res$feature, sqtl_genes$feature)]
+coloc_res$gene_name <- coalesce(coloc_res$gene_name_e, coloc_res$gene_name_s)
+
+coloc_res$tissue <- gsub("tensorQTL_NYGC_|_EUR_.*QTL", "", coloc_res$QTL)
+
+coloc_res$SNP_distance <- abs(coloc_res$GWAS_pos - coloc_res$QTL_pos)
+
+coloc_res <- mutate(coloc_res, distance_filter = case_when( 
+  type == "eQTL" & SNP_distance < 5e5 | (!is.na(LD) & LD >= 0.1 ) ~ "PASS",
+  type == "sQTL" & SNP_distance < 1e5 | (!is.na(LD) & LD >= 0.1) ~ "PASS",
+  TRUE ~ "FAIL"
+) )
+
+coloc_res <- filter(coloc_res, !tissue %in% c("hippocampus", "occipital_cortex", "thoracic_spinal", "temporal_cortex"))
+
+coloc_res$label <- tissue_labels$short[match(coloc_res$tissue, tissue_labels$tissue)]
+
+tissue_levels <- c("FCX", "LMC", "MMC", "UMC", "CBL", "CSC", "LSC")
+
+coloc_res$label <- factor(coloc_res$label, levels = tissue_levels)
+
+table(coloc_res$distance_filter)
+
+coloc_hits <- coloc_res %>%
+  filter(distance_filter == "PASS") %>%
+  filter(PP.H4.abf > 0.8) %>%
+  filter(GWAS_P < 5e-8, GWAS == "VanRheenenALL_2021" )
+
+loci_df <- coloc_hits %>%
+  select(GWAS, locus, GWAS_P) %>%
+  distinct() %>% arrange(GWAS_P) %>%
+  filter(!locus %in% c("locus_15_rs1392976", "locus_14_rs229215", "locus_6_rs2077492")) %>%
+  filter(!grepl("locus_6", locus)) %>%
+  mutate(locus_label = gsub("locus_.*_", "", locus)) %>%
+  mutate(locus_label = gsub("_", "", locus_label)) %>%
+  mutate(locus_label = paste0(locus_label, "\nP=", signif(GWAS_P, 2))) %>%
+  mutate(locus_label = factor(locus_label, levels = locus_label ))
+
+# remove overlapping loci 
+# locus_15_rs1392976
+# locus_14_rs229215
+# remove locus in MHC/HLA region
+# locus_6_rs2077492
+loci_df
+
+# "NicolasSuggestive_2018"
+coloc_plot <- coloc_res %>%
+  mutate(locus_label = loci_df$locus_label[match(.$locus, loci_df$locus)] ) %>%
+  filter(!is.na(locus_label)) %>%
+#filter(distance_filter == "PASS") %>%
+  filter(!grepl("AC|AL", gene_name) & !is.na(gene_name)) %>%
+#filter(PP.H4.abf > 0.9) %>%
+#filter(GWAS_P < Inf, GWAS == "VanRheenenEUR_2021" ) %>%
+  filter( locus %in% coloc_hits$locus & gene_name %in% coloc_hits$gene_name) %>%
+ ggplot(aes(y = gene_name, x = type)) + 
+  geom_point(aes(colour = type, shape = type, size = PP.H4.abf, alpha = PP.H4.abf), position = position_nudge(x = 0)) + 
+  facet_grid(locus_label ~ label, scales = "free_y",space = "free_y" ) +
+ scale_colour_manual(values = c("blue3", "orangered2")) +
+  scale_size_continuous(limits = c(0.5,1), range = c(1,3), breaks = c(0.5, 0.75, 1)) +
+  scale_alpha_continuous(limits = c(0.5,1), range = c(0.5,1), breaks = c(0.5, 0.75, 1)) +
+  theme_bw() +
+    theme(strip.text.y = element_text(angle = 0, colour = "black", hjust = 0.5, size = 7), 
+          strip.text.x = element_text(angle = 0, colour = "black"), 
+          #axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"), 
+          axis.text.y = element_text(face = "italic", colour = "black"),
+          strip.background = element_blank(), 
+          legend.position = "bottom",
+          legend.box.margin = margin(c(0,0,0,0)), 
+          legend.margin = margin(c(0,0,0,0)),
+          strip.placement = "outside",
+          panel.spacing.y = unit(x = 0,units = "points"), 
+          panel.border = element_rect(fill = NA, size = 0.2, colour = "black"), 
+          panel.spacing.x = unit(x = 0,units = "points"),
+          panel.grid = element_blank(),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.ticks.y = element_line(colour = "black")
+          ) +
+    #scale_size_continuous(limits = c(0,1)) +
+   # scale_alpha_continuous(limits = c(0,1)) +
+    guides() +
+    scale_x_discrete(position = "bottom") +
+    labs(x = "", y = "") 
+
+coloc_plot
+ggsave(plot = coloc_plot, filename = "data/QTL/COLOC/coloc_plot.pdf", width =4.5, height = 4 )
+
+coloc_out <- filter(coloc_res, GWAS == "VanRheenenALL_2021", GWAS_P < 5e-8) %>%
+  select(-locus, -gene_name_e, -gene_name_s, -disease, -GWAS) %>%
+  mutate(tissue = tissue_labels$label[match(label, tissue_labels$short)]) %>%
+  mutate(tissue = gsub(" ", "_", tissue)) %>%
+  mutate(GWAS_coord = paste0(GWAS_chr, ":", GWAS_pos), QTL_coord = paste0(QTL_chr, ":", QTL_pos)) %>%
+  select(tissue, label, qtl_type = type, GWAS_SNP, GWAS_P, GWAS_coord, QTL_gene = gene_name, QTL_feature = feature, QTL_SNP, QTL_coord, QTL_Beta, QTL_SE, QTL_P, QTL_MAF, nsnps, starts_with("PP."), LD, SNP_distance ) %>%
+  arrange(desc(PP.H4.abf))
+
+coloc_out
+table(coloc_out$tissue)
+
+write_tsv(coloc_out,"data/QTL/COLOC/NYGC_all_tissues_VanRheenen_ALL_2021_colocalization_results.tsv")
+```
+
+Investigate SLC9A8
+
+```{r}
+library(LDlinkR)
+LDLINK_TOKEN <- Sys.getenv("LDLINK_TOKEN")
+slc <- filter(coloc_hits, gene_name == "SLC9A8")
+## d <- all_obj$locus_20_rs17785991$ENSG00000197818
+#t(slc)
+
+if(rerun){
+  load("data/QTL/COLOC/tensorQTL_NYGC_motor_medial_EUR_eQTL_SLC9A8.RData")
+  
+  slc_df <- d$object$results
+  
+  
+  #LDLinkR - get LD with GWAS lead SNP
+  slc_snps <- slc_df$snp
+  slc_lead <- slc_df$snp[ which(slc_df$pvalues.gwas == min(slc_df$pvalues.gwas))]
+  slc_lead_qtl <- slc_df$snp[ which(slc_df$pvalues.qtl == min(slc_df$pvalues.qtl))]
+  
+  ## chunk snps
+  snp_chunks <- ntile(1:length(slc_snps), n = 6)
+  
+  ## takes a few minutes
+  all_slc_ld <- map(1:6, ~{
+    print(.x)
+    snp_loc <- slc_snps[snp_chunks == .x]
+    slc_ld <- LDmatrix(snps = c(slc_lead, snp_loc), pop = "EUR", r2d = "r2", token = LDLINK_TOKEN, genome_build = "grch38")
+    Sys.sleep(time = 5)
+    return(slc_ld)
+  })
+  
+  slc_ld_df <- map_df(all_slc_ld, ~{
+    filter(.x, RS_number == slc_lead) %>%
+      pivot_longer(names_to = "snp", values_to = "r2", cols = !c(RS_number))
+  })
+  
+  
+  slc_df$GWAS_LD <- slc_ld_df$r2[match(slc_df$snp, slc_ld_df$snp)]
+  library(ggrepel)
+  
+  write_tsv(slc_df, "data/QTL/COLOC/SLC9A8_individual_values.tsv.gz")
+}else{
+  slc_df <- read_tsv("data/QTL/COLOC/SLC9A8_individual_values.tsv.gz")
+}
+
+
+slc_lead <- slc_df$snp[ which(slc_df$pvalues.gwas == min(slc_df$pvalues.gwas))]
+slc_lead_qtl <- slc_df$snp[ which(slc_df$pvalues.qtl == min(slc_df$pvalues.qtl))]
+  
+
+slc_df %>%
+  filter(!is.na(GWAS_LD)) %>%
+  ggplot(aes(x = -log10(pvalues.gwas), y = -log10(pvalues.qtl))) + geom_point(aes(colour = GWAS_LD)) + 
+  theme_classic() +
+labs(x = expression(-log[10]~P["GWAS"]), y = expression(-log[10]~P["eQTL"]), colour = expression("rs17785991"~R^2) ) +
+  scale_colour_viridis_c() +
+  geom_point(data = filter(slc_df, snp == slc_lead), colour = "purple", shape = 18, size = 5) +
+  geom_text_repel(data = filter(slc_df, snp %in% c(slc_lead, slc_lead_qtl)), aes(label = snp))
+
+gwas_pos <- filter(slc_df, snp == slc_lead)$QTL_pos
+
+gene_meta <- read_tsv("~/GENCODE/gencode.v46.gene_meta.tsv.gz")
+
+## patchwork
+library(patchwork)
+
+
+slc_meta <- filter(gene_meta, chr == "chr20", 
+                   (gene_start > (gwas_pos - 2.5e5) & gene_start < (gwas_pos + 2.5e5) ) |
+                   (gene_end > (gwas_pos - 2.5e5) & gene_end < (gwas_pos + 2.5e5) ) 
+                     ) %>%
+  filter(gene_type == "protein_coding") %>%
+  mutate(mid_point = gene_start + ((gene_end - gene_start) / 2 ) ) %>%
+  mutate(pos = 1:(nrow(.)))
+
+slc_meta$pos <- c(2,3,1,2,1)
+
+slc_plot <- slc_meta %>%
+  ggplot(aes(x = gene_start)) +
+  geom_segment(data = filter(slc_meta, strand == "+"),
+    aes(x = gene_start, xend = gene_end, y =pos , yend = pos),
+               arrow = arrow(length = unit(0.05, "npc"), ends = "last" ) ) +
+  geom_segment(data = filter(slc_meta, strand == "-"),
+    aes(x = gene_start, xend = gene_end, y =pos , yend = pos),
+               arrow = arrow(length = unit(0.05, "npc"), ends = "first" ) ) +
+  geom_text(aes(label = gene_name, x = mid_point, y = pos - 0.25), fontface = "italic" )  +
+  xlim(gwas_pos - 2.5e5, gwas_pos + 2.5e5) +
+  theme_void() #+ 
+ # labs(x= "", y = "") +
+  #theme(axis.line.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank(), axis.line.x = element_blank() )
+
+slc_multiplot <- 
+
+slc_df %>%
+  filter(!is.na(GWAS_LD)) %>%
+  ggplot(aes(x = QTL_pos, y = -log10(pvalues.gwas))) + 
+  geom_point(aes(colour = GWAS_LD), size = 0.5) + 
+  scale_colour_viridis_c() +
+  labs(y = expression(-log[10]~P["GWAS"]), y = "position", colour = expression("rs17785991"~R^2),
+       title = "ALS GWAS") +
+  geom_point(data = filter(slc_df, snp == slc_lead), colour = "purple", shape = 18, size = 3) +
+  theme_classic() +
+  xlim(gwas_pos - 2.5e5, gwas_pos + 2.5e5) + 
+
+slc_df %>%
+  filter(!is.na(GWAS_LD)) %>%
+  ggplot(aes(x = QTL_pos, y = -log10(pvalues.qtl))) + 
+  geom_point(aes(colour = GWAS_LD), size = 0.5) + 
+  scale_colour_viridis_c() +
+  labs(y = expression(-log[10]~P["QTL"]), y = "position", colour = expression("rs17785991"~R^2), title = "SLC9A8 eQTL", subtitle = "MMC" ) +
+  geom_point(data = filter(slc_df, snp == slc_lead), colour = "purple", shape = 18, size = 3) +
+  theme_classic() +
+  xlim(gwas_pos - 2.5e5, gwas_pos + 2.5e5) +
+slc_plot + 
+plot_layout(nrow = 3, guides = "collect", heights = c(1,1,0.5))
+
+
+ggsave(plot = slc_multiplot, filename = "data/QTL/COLOC/SLC9A8_motor_cortex_multiplot.pdf", width = 6, height = 6 )
+
+slc_df %>%
+  ggplot(aes(x = slc_df$pos, y = -log10(pvalues.qtl))) + geom_point() + 
+  geom_hline(yintercept = -log10(1e-6), linetype = 3) +
+  theme_classic()
+
+#slc_ld <- LDmatrix(snps = c(slc_lead, slc_snps[1:100]), pop = "EUR", token = LDLINK_TOKEN, genome_build = "grch38")
+
+```
+
+
+Investigate NEK1 and OPTN
+
+```{r}
+nek1_res <- coloc_res %>%
+  filter(gene_name == "NEK1", type == "sQTL") %>%
+  arrange(desc(PP.H4.abf))
+
+nek1_bed <- nek1_res %>%
+  select(feature) %>%
+  separate(feature, into = c("chr", "start", "end"), sep = "_", convert = TRUE) %>%
+  distinct()
+
+write_tsv(nek1_bed,"data/QTL/COLOC/NEK1_sQTL.bed", col_names = FALSE)
+```
+
