@@ -1,0 +1,169 @@
+---
+title: "MAP4K4 replication"
+output: html_document
+date: "2026-07-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+intron_df <- read_tsv("MAP4K4/MAP4K4_introns.bed", col_names = c("chr", "start", "end", "junction", "isoform", "isoform_label") )
+intron_df$junc <- paste0(intron_df$chr, ":", intron_df$start, "-", intron_df$end)
+```
+
+Trying to replicate the MAP4K4 finding from the NYGC bulk RNA-seq. 
+
+In spinal cord there are 3 dominant junctions in the cluster:
+chr2:101859864:101864930:clu_45901_+ 20% in ALS -> 13% in control (up in ALS)
+chr2:101859864:101863821:clu_45901_+ 28% in ALS -> 33% in control (down in ALS)
+chr2:101864051:101864930:clu_45901_+ 36% in ALS -> 40% in control (down in ALS)
+
+chr2:101859864:101864930:clu_45901_+	-0.33	0.2039	0.1326	0.0713 - 20% in ALS -> 13% in control (up in ALS)
+chr2:101859864:101863821:clu_45901_+	0.25	0.2790	0.3251	-0.0461 - 28% in ALS -> 33% in control (down in ALS)
+chr2:101864051:101864930:clu_45901_+	0.20	0.3604	0.3987	-0.0383 - 36% in ALS -> 40% in control (down in ALS)
+
+chr2:101859864:101860825:clu_45901_+	-0.17	0.0503	0.0386	0.0117 - 5% in ALS -> 3.8% in control (up in ALS)
+chr2:101860986:101864930:clu_45901_+	-0.22	0.0308	0.0224	0.0084 - 3% in ALS -> 2% in control (down in ALS)
+chr2:101859864:101863827:clu_45901_+	0.22	0.0592	0.0667	-0.0076 - 5% in ALS - > 6% in control (down in ALS)
+chr2:101860986:101863821:clu_45901_+	0.06	0.0164	0.0159	0.0005 - unchanged
+
+
+We correlated chr2:101859864:101864930 with oligodendrocyte proportions and found that in ALS cases with lower oligo proportions there was even more relative usage of this intron, suggesting that it's specifically used in non-oligodendrocytes.
+
+Second most significant cluster in spinal cord:
+
+chr2:101867309:101869622:clu_45903_+	-0.41	0.1002	0.0566	0.0436
+chr2:101868037:101869622:clu_45903_+	0.21	0.4794	0.5036	-0.0242
+chr2:101867309:101868029:clu_45903_+	0.20	0.4204	0.4398	-0.0194
+
+
+Frontal Cortex case vs control
+intron	logef	ALS	Control	deltapsi
+chr2:101864051:101864930:clu_45901_+	-0.10	0.3594	0.3366	0.0228 - 36% in ALS -> 34% in control (up in ALS)
+chr2:101859864:101863821:clu_45901_+	-0.11	0.2552	0.2355	0.0197 - 25% in ALS -> 23% in control (up in ALS)
+chr2:101860986:101864930:clu_45901_+	0.28	0.0529	0.0721	-0.0192 - 5% in ALS -> 7% in control (down in ALS)
+chr2:101859864:101864930:clu_45901_+	0.08	0.1614	0.1805	-0.0191 - 16% in ALS -> 18% in control (down in ALS)
+chr2:101859864:101860825:clu_45901_+	0.15	0.0733	0.0880	-0.0147 - 7% in ALS -> 9% in control (down in ALS)
+chr2:101859864:101863827:clu_45901_+	-0.13	0.0627	0.0569	0.0058 - 6% in ALS -> 5.6% in control (up in ALS)
+chr2:101860986:101863821:clu_45901_+	-0.17	0.0351	0.0304	0.0047
+
+
+
+Duration association in FCX: last number is deltaPSI (slope of increasing duration)
+chr2:101859864:101863821:clu_45901_+	0.5517	0.05	0.5604	clu_45901_+	0.0086
+chr2:101859864:101864930:clu_45901_+	0.0657	-0.03	0.0620	clu_45901_+	-0.0037
+chr2:101864051:101864930:clu_45901_+	0.2931	0.02	0.2908	clu_45901_+	-0.0024
+chr2:101860986:101863821:clu_45901_+	0.0173	-0.02	0.0164	clu_45901_+	-0.0008
+chr2:101860986:101864930:clu_45901_+	0.0106	-0.04	0.0099	clu_45901_+	-0.0008
+chr2:101859864:101860825:clu_45901_+	0.0179	-0.01	0.0172	clu_45901_+	-0.0007
+chr2:101859864:101863827:clu_45901_+	0.0436	0.03	0.0434	clu_45901_+	-0.0003
+
+Barretto - spinal cord snRNA-seq
+
+```{r}
+bar_meta <- read_tsv("MAP4K4/Barretto/LSC_CELL_METADATA.tsv.gz") %>% janitor::clean_names()
+
+bar_junc <- read_tsv("MAP4K4/Barretto/barretto_all_mapk4k_junctions.tsv.gz")
+names(bar_meta)[1] <- "id"
+bar_samples <- select(bar_meta, library_id, library_name, level_1, level_2, tissue_type, subject_id, pmi, sex, age) %>% distinct()
+
+bar_junc$sample <- gsub("_MAP4K4_bam.bam", "", bar_junc$sample)
+names(bar_junc)[1] <- "junc"
+table(unique(bar_junc$sample) %in% bar_samples$library_id)
+
+bar_junc$barcode <- gsub("-.*", "", bar_junc$barcode)
+
+table(bar_junc$barcode %in% bar_meta$x10x_cell_barcode)
+
+bar_junc$cell_type <- bar_meta$cell_type[match(bar_junc$barcode, bar_meta$x10x_cell_barcode)]
+bar_junc$cell_subtype <- bar_meta$cell_subtype[match(bar_junc$barcode, bar_meta$x10x_cell_barcode)]
+
+
+bar_junc$disease <- bar_meta$level_1[match(bar_junc$sample, bar_meta$library_id)]
+
+
+
+bar_df <- bar_junc %>%
+  inner_join(intron_df, by= "junc") %>%
+  filter(!is.na(cell_type)) %>%
+  group_by(isoform_label, cell_type) %>%
+  summarize(total = sum(count)) %>%
+  mutate(cell_type_label = recode(cell_type,
+    "Astrocyte"           = "Astrocytes",
+    "Inhibitory Neuron"   = "Inhibitory neurons",
+    "Excitatory  Neuron"  = "Excitatory neurons",
+    "Motor Neurons"       = "Motor neurons",
+    "OPCs"                = "OPC"
+  )) %>%
+  filter(cell_type != "Meninges") 
+
+
+bar_df %>%
+  ggplot(aes(y = cell_type_label, x = isoform_label)) + geom_text(aes(label = total)) +
+  scale_y_discrete(limits = rev) +
+  labs(y = "", x = "") +
+  theme_classic()
+  
+bar_df_complete <- bar_df %>%
+  ungroup() %>%
+  select(-cell_type) %>%
+  complete(cell_type_label, isoform_label, fill = list(total = 0)) %>%
+  mutate(
+    isoform_label = factor(isoform_label, levels = c("A-B-D", "A-C-D", "A-D")),
+    cell_type_label = factor(cell_type_label, 
+      levels = c("Oligodendrocytes", "OPC", "Astrocytes", 
+                 "Microglia", "Motor neurons", 
+                 "Inhibitory neurons", "Endothelial"))
+  )
+
+map_bar_plot <- ggplot(bar_df_complete, aes(x = cell_type_label, y = total, fill = isoform_label)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(values = c(
+    "A-B-D" = "red",
+    "A-C-D" = "darkblue",
+    "A-D"   = "darkred"
+  )) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(x = NULL, 
+       y = "Junction-spanning reads",
+       fill = "MAP4K4 isoform") +
+  theme_bw(base_size = 11) +
+  geom_text(aes(label = total)) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.text = element_text(colour = "black"),
+    axis.ticks = element_line(colour = "black"),
+    legend.position = "top"
+  ) + coord_flip() +
+  scale_x_discrete(limits = rev) +
+  scale_y_continuous(trans = "log1p", breaks = c(0,10,50, 1000), expand = c(0,0), limits = c(0,1100))
+
+ggsave(plot = map_bar_plot, filename = "plots/MAP4K4_Barretto_junction_plot.pdf", width =3 , height = 5)
+
+map_bar_plot
+
+write_tsv(bar_df_complete, "MAP4K4/barretto_isoforms_per_cell.tsv")
+
+
+bar_junc %>%
+  inner_join(intron_df, by= "junc") %>%
+  filter(!is.na(cell_type)) %>%
+  group_by(isoform, sample, cell_type, disease) %>%
+  summarize(total = sum(count)) %>%
+  mutate(cell_type = str_sub(cell_type, 1, 3)) %>%
+  ggplot(aes(x = isoform, y = total)) + geom_jitter(width = 0.1, aes(colour = disease)) + facet_wrap(~cell_type)
+
+# subtype level
+bar_junc %>%
+  inner_join(intron_df, by= "junc") %>%
+  filter(!is.na(cell_type)) %>%
+  group_by(isoform, cell_type, cell_subtype) %>%
+  summarize(total = sum(count)) %>%
+  #mutate(cell_type = str_sub(cell_type, 1, 3)) %>%
+  ggplot(aes(x = cell_subtype, y = isoform)) + geom_text(aes(label = total)) + facet_grid(cell_type~., scales = "free", space = "free") + coord_flip()
+
+
+```
+

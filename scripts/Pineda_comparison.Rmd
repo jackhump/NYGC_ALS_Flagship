@@ -1,0 +1,311 @@
+---
+title: "Compare Pineda"
+author: "Jack Humphrey"
+date: "2026-07-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+Compare NYGC DEGs to Pineda snRNA-seq DEGs
+
+BA4 - MCX
+BA9 - FCX
+
+
+```{r}
+nygc <- readxl::read_excel("~/Downloads/ST4_updated.xlsx")
+nygc_cc <-  readxl::read_excel("../../Manuscripts/NYGC_Flagship/Figures/Review Response/Tables/combined_DEG_supp_tables_review.xlsx", sheet = "ST18-DEG_cell_types_corrected")
+
+names(nygc)[1] <- "gene_id"
+names(nygc)[2] <- "gene_symbol"
+nygc$gene_id <- gsub("\\.[0-9]+", "", nygc$gene_id)
+
+# Ali omits gene symbols for non-coding RNAs - fix this somehow
+nygc_mcx <- select(nygc, gene_id, gene.nygc = gene_symbol, starts_with("MCX")) %>% drop_na()
+nygc_fcx <- select(nygc, gene_id, gene.nygc = gene_symbol, starts_with("FCX")) %>% drop_na()
+
+names(nygc_mcx) <- c("gene_id", "gene_name", "lfc", "pvalue", "padj")
+names(nygc_fcx) <- c("gene_id", "gene_name", "lfc", "pvalue", "padj")
+
+# cell-type corrected
+names(nygc_cc)[1] <- "gene_id"
+names(nygc_cc)[2] <- "gene_symbol"
+
+nygc_cc$gene_id <- gsub("\\.[0-9]+", "", nygc_cc$gene_id)
+
+nygc_mcx_cc <- select(nygc_cc, gene_id, gene.nygc = gene_symbol, starts_with("MCX")) %>% drop_na()
+nygc_fcx_cc <- select(nygc_cc, gene_id, gene.nygc = gene_symbol, starts_with("FCX")) %>% drop_na()
+
+names(nygc_mcx_cc) <- c("gene_id", "gene_name", "lfc", "pvalue", "padj")
+names(nygc_fcx_cc) <- c("gene_id", "gene_name", "lfc", "pvalue", "padj")
+
+test <- inner_join(nygc_fcx, nygc_fcx_cc, by = c("gene_id", "gene_name"), suffix = c(".norm", ".cc") )
+ggplot(test, aes(x = lfc.norm, y = lfc.cc)) + geom_point() + xlim(-2,2) + ylim(-2,2)
+table(test$padj.cc < 0.05)
+table(test$padj.norm < 0.05)
+cc_genes <- filter(test, padj.cc < 0.05) %>% pull(gene_id)
+norm_genes <- filter(test, padj.norm < 0.05) %>% pull(gene_id)
+length(intersect(cc_genes, norm_genes))
+
+
+make_file_list <- function(file){
+  sheets <- readxl::excel_sheets(file)
+  data.frame(file = rep(file, length(sheets) ), sheet = sheets)
+}
+
+pineda_files <- c("MAP4K4/Pineda/4_1_deg_res_BA4_SALS.xlsx", "MAP4K4/Pineda/4_5_deg_res_BA9_SALS.xlsx", "MAP4K4/Pineda/6_1_deg_res_BA4_SALS.xlsx", "MAP4K4/Pineda/6_5_deg_res_BA9_SALS.xlsx") 
+
+pineda_df <- map_df(pineda_files, make_file_list) %>%
+  mutate(tissue = case_when(
+    grepl("BA4", file) ~ "MCX",
+    grepl("BA9", file) ~ "FCX"
+  ))
+pineda_df$set <- paste0(pineda_df$tissue, ":", pineda_df$sheet)
+
+
+# for each sheet in each file
+# read in sheet
+# join with NYGC MCX or FCX
+# count shared up and down genes
+# do correlation with and without shared genes
+
+compare_res <- map(1:nrow(pineda_df), ~{
+  d <- pineda_df[.x,]
+  df <- readxl::read_excel(d$file, sheet = d$sheet)
+  names(df) <- c("gene_id", "gene_name", "chr", "biotype", "lfc", "ave_expr", "t", "pvalue", "padj", "b")
+  
+  mcx_merge <- inner_join(nygc_mcx, df, by = "gene_id", suffix = c(".nygc", ".pin") ) %>% mutate(cell_type = d$sheet, tissue = d$tissue)
+  fcx_merge <- inner_join(nygc_fcx, df, by = "gene_id", suffix = c(".nygc", ".pin") ) %>% mutate(cell_type = d$sheet, tissue = d$tissue)
+  
+   mcx_cc_merge <- inner_join(nygc_mcx_cc, df, by = "gene_id", suffix = c(".nygc", ".pin") ) %>% mutate(cell_type = d$sheet, tissue = d$tissue)
+  fcx_cc_merge <- inner_join(nygc_fcx_cc, df, by = "gene_id", suffix = c(".nygc", ".pin") ) %>% mutate(cell_type = d$sheet, tissue = d$tissue)
+  
+  return(list(mcx = mcx_merge, fcx = fcx_merge, mcx_cc = mcx_cc_merge, fcx_cc = fcx_cc_merge))
+} )
+
+names(compare_res) <- pineda_df$set
+
+#d <- res$`MCX:Ex`$mcx
+calc_concord <- function(d, group){
+  d <- filter(d, padj.nygc < 0.05)
+  n_gene <- nrow(d)
+  #sig_both <- filter(d, padj.nygc < 0.05)
+  #n_sig <- nrow(sig_both)
+  cor_all <- cor.test(d$lfc.nygc, d$lfc.pin, method = "spearman")
+  #cor_sig <- cor.test(sig_both$lfc.nygc, sig_both$lfc.pin, method = "spearman" )
+  r_all <- cor_all$estimate
+  p_all <- cor_all$p.value
+  #r_sig <- cor_sig$estimate
+  #p_sig <- cor_sig$p.value
+  n_concordant <- filter(d, sign(lfc.nygc) == sign(lfc.pin)) %>% nrow()
+  prop_concordant <- n_concordant / n_gene
+  data.frame(group, n_gene, r_all, p_all, n_concordant, prop_concordant) %>% as_tibble()
+}
+
+cor_res <- map_df(compare_res, ~{
+  mcx <- .x$mcx
+  fcx <- .x$fcx
+  mcx_cc <- .x$mcx_cc
+  fcx_cc <- .x$fcx_cc
+  
+  bind_rows( calc_concord(mcx, "MCX"), calc_concord(fcx, "FCX"),calc_concord(mcx_cc, "MCX_cc"), calc_concord(fcx_cc, "FCX_cc") )
+  
+}, .id = "set")
+
+cor_res <- separate(cor_res, set, into = c("pineda_tissue", "cell_type"), sep = ":")
+
+cor_res$cell_group <- gsub("\\..*", "", cor_res$cell_type)
+
+names(cor_res)[3] <- "bulk_tissue"
+
+out_df <- filter(cor_res, pineda_tissue == bulk_tissue)
+
+cor_res$deg_type <- ifelse(grepl("_cc", cor_res$bulk_tissue), "Corrected", "Standard")
+cor_res$bulk <- gsub("_cc", "", cor_res$bulk_tissue)
+```
+
+
+```{r}
+# just principal cell-types
+# cor_res %>% 
+#   filter(!grepl("Ex.|In.", cell_type) ) %>%
+#   mutate(cell_type = gsub(".*\\.", "", cell_type)) %>%
+#   filter(pineda_tissue == bulk) %>%
+#   ggplot(aes(x = deg_type, y = r_all)) + 
+#   geom_line(aes(group = cell_type)) +
+#   geom_point(aes(colour = cell_group, shape = deg_type, group = deg_type) ) + 
+#   facet_grid(bulk ~ cell_type) + 
+#   theme_bw()
+
+
+cor_res_out <- cor_res %>% 
+    mutate(cell_type = recode(cell_type,
+    "Ex"                      = "Excitatory",
+    "In"                      = "Inhibitory",
+    "Glia.Astro.GFAP-neg"     = "Astrocytes (GFAP+)",
+    "Glia.Astro.GFAP-pos"     = "Astrocytes (GFAP-)",
+    "Glia.Micro"              = "Microglia",
+    "Glia.Oligo"              = "Oligos",
+    "Glia.OPC"                = "OPC",
+    "Vasc.Endo"               = "Endothelial",
+    "Vasc.Mural.Pericyte"     = "Pericytes",
+    "Vasc.Fibro"              = "Fibro"
+  )) %>%
+  filter(!grepl("Ex\\.|In\\.", cell_type) ) %>%
+  mutate(cell_type = gsub(".*\\.", "", cell_type)) %>%
+  filter(cell_type != "Fibro")
+
+
+write_tsv(cor_res_out, "MAP4K4/Pineda/all_pairwise_bulk_single_correlations.tsv") ## PUT IN SUPPLEMENT!!
+
+p1 <- cor_res_out %>%
+  mutate(p_label = ifelse(p_all < 0.05/9, "*", "") ) %>%
+  mutate(r_all = ifelse(r_all < 0, 0, r_all)) %>%
+  filter(pineda_tissue == bulk) %>%
+  filter(deg_type == "Standard") %>%
+  ggplot(aes(x = deg_type, y = cell_type)) + 
+  geom_tile(aes(fill = r_all), colour = "black") +
+  geom_text(aes(label = p_label)) +
+  facet_wrap(~bulk) +
+  # Replace your existing fill scale with this
+  scale_fill_gradient(low = "white", high = "firebrick3",
+   # palette   = "Reds",
+    #direction = 1,
+    limits    = c(0, 0.5),
+    name      = expression(rho[LFC])
+  ) +
+  scale_x_discrete(limits = rev, expand = c(0,0)) +
+  scale_y_discrete(limits = rev, expand = c(0,0)) +
+  labs(fill = expression(rho[LFC]), x = "", y = "") +
+  theme(strip.background = element_blank(), axis.text = element_text(colour = "black"), axis.ticks = element_line(colour = "black"), axis.text.x = element_blank(), axis.ticks.x = element_blank() )
+p1
+ggsave(plot = p1, filename = "MAP4K4/Pineda/fcx_mcx_correlation_heatmap.pdf", height = 7, width = 4)
+
+
+library(ggrastr)
+make_scatter <- function(data, tissue, cell, sub, test = "once"){
+
+  df <- data %>%
+  filter(padj.nygc < 0.05)# & padj.pin < 0.05)
+  if(test == "both"){
+    df <- filter(df, padj.pin < 0.05)
+  }
+  label_df <- group_by(df, lfc.pin > 0, lfc.nygc > 0) %>% tally()
+  print(label_df)
+  df %>%
+  ggplot(aes(x = lfc.pin, y = lfc.nygc)) + 
+  rasterise(geom_point(size = 0.75, colour = "black", shape = 21, aes(fill = padj.pin < 0.05)), dpi = 600)  + 
+ # geom_density_2d(colour = "black") +
+  ggpubr::stat_cor(method = "spearman") + theme_classic() +
+  ylim(-1,1) + xlim(-0.5,0.5) + 
+  geom_hline(linetype = 3, yintercept = 0) + geom_vline(linetype =3, xintercept = 0) +
+  labs(x = "Pineda LFC", y = "NYGC LFC", title = paste0("Bulk ", tissue, " vs ", cell), subtitle = sub) +
+  annotate(geom = "text", x = -0.4, y = -0.5, label = label_df$n[1]) +
+  annotate(geom = "text", x = -0.4, y = 0.5, label = label_df$n[2] ) +
+  annotate(geom = "text", x = 0.4, y = -0.5, label = label_df$n[3] ) +
+  annotate(geom = "text", x = 0.4, y = 0.5, label = label_df$n[4] ) +
+  scale_fill_manual(values = c("yellow", "red"))
+}
+
+#compare_res$`FCX:Ex`$fcx
+library(patchwork)
+# make_scatter(compare_res$`FCX:Ex`$fcx, "FCX", "Excitatory Neurons", "standard model") + 
+# make_scatter(compare_res$`FCX:Ex`$fcx, "FCX", "Excitatory Neurons", "double sig", test = "both") +
+# 
+# make_scatter(compare_res$`MCX:Ex`$mcx, "MCX", "Excitatory Neurons", "standard model") + 
+# make_scatter(compare_res$`MCX:Ex`$mcx, "MCX", "Excitatory Neurons", "double sig", test = "both")
+
+p2 <- make_scatter(compare_res$`FCX:Ex`$fcx, "FCX", "Excitatory Neurons", sub = "") +
+make_scatter(compare_res$`MCX:Ex`$mcx, "MCX", "Excitatory Neurons", sub = "") +
+  plot_layout(ncol = 1)
+p2
+ggsave(filename = "MAP4K4/Pineda/fcx_mcx_correlation_scatter.pdf", plot = p2, width = 6, height = 8)
+
+## why don't the correlations and numbers match?
+##FCX - FCX Exc
+filter(cor_res_out, pineda_tissue == bulk_tissue, cell_type == "Excitatory")
+x <- compare_res$`FCX:Ex`$fcx
+dim(x)
+filter(x, padj.nygc < 0.05) %>% nrow() # 6920
+filter(x, padj.nygc < 0.05 & padj.pin < 0.05) %>% nrow() # 3538
+x_sig <- filter(x, padj.nygc < 0.05)
+cor.test(x_sig$lfc.nygc, x_sig$lfc.pin, method = "spearman")
+
+```
+
+```{r}
+clean_cell_label <- function(cell) {
+  cell %>%
+    gsub("^Ex$", "Excitatory neurons", .) %>%
+    gsub("^In$", "Inhibitory neurons", .) %>%
+    gsub("^Glia\\.Astro\\.GFAP-neg$", "Astrocytes (GFAP-)", .) %>%
+    gsub("^Glia\\.Astro\\.GFAP-pos$", "Astrocytes (GFAP+)", .) %>%
+    gsub("^Glia\\.Micro$", "Microglia", .) %>%
+    gsub("^Glia\\.Oligo$", "Oligodendrocytes", .) %>%
+    gsub("^Glia\\.OPC$", "OPC", .) %>%
+    gsub("^Vasc\\.Endo$", "Endothelial", .) %>%
+    gsub("^Vasc\\.Fibro$", "Fibroblasts", .) %>%
+    gsub("^Vasc\\.Mural\\.Pericyte$", "Pericytes", .)
+}
+
+broad_cells <- c(
+  "Ex", "In",
+  "Glia.Astro.GFAP-neg", "Glia.Astro.GFAP-pos",
+  "Glia.Micro", "Glia.Oligo", "Glia.OPC",
+  "Vasc.Endo", "Vasc.Mural.Pericyte", "Vasc.Fibro"
+)
+
+tissues <- c("FCX", "MCX")
+
+plot_list <- list()
+
+for (cell in broad_cells) {
+  for (tissue in tissues) {
+    key <- paste0(tissue, ":", cell)
+    tissue_lower <- tolower(tissue)
+    cell_label <- clean_cell_label(cell)
+
+    if (key %in% names(compare_res) &&
+        tissue_lower %in% names(compare_res[[key]])) {
+      p <- make_scatter(
+        compare_res[[key]][[tissue_lower]],
+        tissue,
+        cell_label,
+        "standard model"
+      )
+    } else {
+      p <- ggplot() +
+        theme_void() +
+        labs(title = paste0("Bulk ", tissue, " vs ", cell_label),
+             subtitle = "not available") +
+        theme(plot.title    = element_text(size = 8, colour = "grey60"),
+              plot.subtitle = element_text(size = 7, colour = "grey60"))
+    }
+    plot_list[[paste0(tissue, "_", cell)]] <- p
+  }
+}
+
+wrap_plots(plot_list, ncol = 2, byrow = TRUE) +
+  plot_annotation(
+    title = "Bulk ALS DEGs vs Pineda et al. single-nucleus DEGs",
+    subtitle = "Genes significant in bulk (FDR < 0.05); Spearman correlation",
+    theme = theme(
+      plot.title    = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 10)
+    )
+  )
+
+ggsave(
+  "bulk_vs_snrnaseq_broad_classes.pdf",
+  width     = 10,
+  height    = length(broad_cells) * 3.5,
+  limitsize = FALSE
+)
+```
+
+
+
